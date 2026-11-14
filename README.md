@@ -11,14 +11,14 @@ traits (aggression, force mix, what to protect, what to target). A population
 of doctrines evolves through league play, and commanders counter-build
 against what they observe within a match.
 
-**Status: M7** — doctrine genome and two-layer commander. A commander scores objectives with the genome's weights, picks a main and secondary effort, keeps garrisons, plans builds and adapts its build mix to what it sees; the tactical layer carries tasks out. The viewer shows each unit's task and adaptation events. Before that, M6 added fog of war. Each commander sees only what its sensors
+**Status: M8** — an evolution league (`python -m fieldbox evolve`) breeds doctrine genomes against peers, a hall of fame and fixed anchors, and the Evolution Lab (`python -m fieldbox gui --screen evolab`) shows trait drift, champion Elo, cross-generation win rates and outcome mix. Before that, M7: doctrine genome and two-layer commander. A commander scores objectives with the genome's weights, picks a main and secondary effort, keeps garrisons, plans builds and adapts its build mix to what it sees; the tactical layer carries tasks out. The viewer shows each unit's task and adaptation events. Before that, M6 added fog of war. Each commander sees only what its sensors
 see (unit and structure discs, radar scaled by strength and power, halved
 without a data center); lost contacts linger as ghosts for a few turns and
 seen structures stay on the map until seen destroyed. The match viewer shows
 God view, BLUE's view or RED's view, with radar range rings. Underneath are
 the M5 viewer and the M4 engine (structures, power, production, command points,
-supply sources, HQ victory) on generated point-symmetric worlds. The evolution
-league is next.
+supply sources, HQ victory) on generated point-symmetric worlds. The main menu
+and packaging are next.
 
 ## Quick start
 

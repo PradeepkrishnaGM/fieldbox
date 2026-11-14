@@ -82,6 +82,9 @@ def make_screen(name: str, app: App, seed: int = 1, preset: str = "standard", **
     if name == "match":
         from .screens.match import MatchScreen
         return MatchScreen.create(app, seed=seed, preset=preset, **opts)
+    if name == "evolab":
+        from .screens.evolab import EvoLabScreen
+        return EvoLabScreen(app, root=opts.get("root") or "runs/evo", run=opts.get("run"))
     raise ValueError(f"unknown screen '{name}'")
 
 

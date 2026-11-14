@@ -38,6 +38,8 @@ def render_screen(name: str, out: str, seed: int = 1, preset: str = "standard",
             screen.select = select
             screen.view = view if screen.has_fog else None
             screen.rings = rings
+        if name == "evolab":
+            screen.sel_gen = opts.get("gen")
         app.draw_frame()
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         pygame.image.save(app.window, out)
@@ -48,7 +50,7 @@ def render_screen(name: str, out: str, seed: int = 1, preset: str = "standard",
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="fieldbox.ui.shot")
-    p.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match"])
+    p.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match", "evolab"])
     p.add_argument("--seed", type=int, default=1, help="map seed")
     p.add_argument("--preset", default="standard")
     p.add_argument("--out", required=True)
@@ -59,12 +61,15 @@ def main(argv=None) -> None:
     p.add_argument("--game-seed", type=int, default=0)
     p.add_argument("--replay", default=None, help="match: render a saved replay")
     p.add_argument("--view", default="god", choices=["god", "blue", "red"], help="match: fog view")
+    p.add_argument("--root", default="runs/evo", help="evolab: runs directory")
+    p.add_argument("--run", default=None, help="evolab: run to select")
+    p.add_argument("--gen", type=int, default=None, help="evolab: generation to select")
     p.add_argument("--select-unit", type=int, default=None, help="match: select this unit id")
     p.add_argument("--rings", action="store_true", help="match: show radar range rings")
     a = p.parse_args(argv)
     print(render_screen(a.screen, a.out, a.seed, a.preset, turns=a.turns, anim=a.anim,
                         blue=a.blue, red=a.red, game_seed=a.game_seed, replay=a.replay,
-                        view={"god": None, "blue": 0, "red": 1}[a.view], rings=a.rings,
+                        view={"god": None, "blue": 0, "red": 1}[a.view], rings=a.rings, root=a.root, run=a.run, gen=a.gen,
                         select=None if a.select_unit is None else ("unit", a.select_unit)))
 
 

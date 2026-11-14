@@ -461,3 +461,45 @@ COUNTER_TABLE: Dict[str, Tuple[str, ...]] = {
     "ARTILLERY": ("RECON", "JET"),
     "INFANTRY": ("TANK",),
 }
+
+
+# ---------------------------------------------------------------------------
+# Evolution league (M8)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EvoParams:
+    world: str = "standard"             # world preset the games are played on
+    pop_size: int = 16
+    generations: int = 40
+    elites: int = 2                     # copied unchanged into the next generation
+    tourn_size: int = 3                 # tournament selection size
+    mut_prob: float = 0.3               # per-gene mutation probability
+    mut_sigma: float = 0.08             # gaussian step of a mutation (generation 0 uses 3x)
+    cx_prob: float = 0.5                # crossover probability
+    maps_per_gen: int = 4               # fresh map seeds per generation
+    n_peer: int = 4                     # games each genome starts against peers
+    n_hof: int = 2                      # ... against hall-of-fame members (anchors while it is empty)
+    n_anchor: int = 2                   # ... against the fixed anchors
+    hof_size: int = 10                  # hall-of-fame capacity (oldest dropped)
+    anchor_eval_games: int = 10         # extra champion games vs anchors, for the Elo estimate
+    xgen_stride: int = 5                # champions of every n-th generation meet in the final matrix
+    xgen_games: int = 4                 # games per pair in that matrix
+    workers: int = 10                   # processes (leave 2 of 12 threads free)
+    vp_weight: float = 0.1              # fitness = result + vp_weight * tanh(vp_margin / vp_scale)
+    vp_scale: float = 100.0
+    status_every: int = 8               # rewrite status.json after this many finished games
+
+
+EVO = EvoParams()
+EVO_PRESETS: Dict[str, EvoParams] = {
+    "evo-standard": EVO,
+    "evo-tiny": EvoParams(world="tiny", pop_size=4, generations=2, elites=1, maps_per_gen=1,
+                          n_peer=2, n_hof=1, n_anchor=1, hof_size=3, anchor_eval_games=3,
+                          xgen_stride=1, xgen_games=1, workers=2, status_every=2),
+}
+# Fixed opponents. Their Elo (doctrine-default = 1500) is calibrated by
+# `python -m fieldbox evolve --bench` and pasted here.
+EVO_ANCHORS: Tuple[str, ...] = ("doctrine-default", "rush", "doctrine-legacy")
+EVO_ANCHOR_ELO: Dict[str, float] = {"doctrine-default": 1500.0, "rush": 1030.0,
+                                    "doctrine-legacy": 1500.0}   # calibrated on standard, 8 maps x 2 colours

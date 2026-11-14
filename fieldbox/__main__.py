@@ -100,7 +100,21 @@ def cmd_worldgen(args) -> None:
 def cmd_gui(args) -> None:
     from .ui.app import run_gui
     run_gui(args.screen, seed=args.seed, preset=args.preset, blue=args.blue, red=args.red,
-            game_seed=args.game_seed, turns=args.turns, replay=args.replay)
+            game_seed=args.game_seed, turns=args.turns, replay=args.replay,
+            root=args.root, run=args.run)
+
+
+def cmd_evolve(args) -> None:
+    from .league import evolve as E
+    ov = {k: v for k, v in (("pop_size", args.pop), ("generations", args.generations)) if v}
+    if args.bench:
+        E.bench(args.preset, workers=args.workers, overrides=ov, calibrate=not args.quick)
+        return
+    if not args.run:
+        raise SystemExit("--run NAME is required")
+    d = E.evolve(args.preset, args.run, args.seed, root=args.root, resume=args.resume,
+                 workers=args.workers, overrides=ov)
+    print(f"done: {d}")
 
 
 def main(argv=None) -> None:
@@ -150,6 +164,21 @@ def main(argv=None) -> None:
     rp.add_argument("--csv", default=None, help="directory for the CSV tables")
     rp.set_defaults(func=cmd_report)
 
+    from .params import EVO_PRESETS
+    ev = sub.add_parser("evolve", help="evolve doctrine genomes through league play")
+    ev.add_argument("--preset", default="evo-tiny", choices=sorted(EVO_PRESETS))
+    ev.add_argument("--run", default=None, help="run name (directory under --root)")
+    ev.add_argument("--seed", type=int, default=1, help="run seed")
+    ev.add_argument("--resume", action="store_true", help="continue from the last finished generation")
+    ev.add_argument("--workers", type=int, default=None, help="override the preset's worker count")
+    ev.add_argument("--root", default="runs/evo")
+    ev.add_argument("--pop", type=int, default=None, help="override population size")
+    ev.add_argument("--generations", type=int, default=None, help="override generation count")
+    ev.add_argument("--quick", action="store_true", help="with --bench: skip the anchor calibration")
+    ev.add_argument("--bench", action="store_true",
+                    help="time games, print the ETA and calibrate anchor Elo (runs no evolution)")
+    ev.set_defaults(func=cmd_evolve)
+
     from .params import PRESETS as WORLD_PRESETS
     wg = sub.add_parser("worldgen", help="generate a world and print its stats")
     wg.add_argument("--seed", type=int, default=1)
@@ -157,7 +186,7 @@ def main(argv=None) -> None:
     wg.set_defaults(func=cmd_worldgen)
 
     gu = sub.add_parser("gui", help="open a desktop window (needs pygame-ce)")
-    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match"])
+    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match", "evolab"])
     gu.add_argument("--seed", type=int, default=1, help="map seed")
     gu.add_argument("--preset", default="standard", choices=sorted(WORLD_PRESETS))
     gu.add_argument("--blue", default="doctrine", help="match: BLUE agent")
@@ -165,6 +194,8 @@ def main(argv=None) -> None:
     gu.add_argument("--game-seed", type=int, default=0, help="match: game seed")
     gu.add_argument("--turns", type=int, default=None, help="match: turn limit override")
     gu.add_argument("--replay", default=None, metavar="FILE.fbr", help="match: open a saved replay")
+    gu.add_argument("--root", default="runs/evo", help="evolab: runs directory")
+    gu.add_argument("--run", default=None, help="evolab: run to select")
     gu.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)
