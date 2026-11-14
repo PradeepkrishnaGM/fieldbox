@@ -278,6 +278,30 @@ def run(preset: str, blue_name: str, red_name: str, games: int,
             f"{st.stuck_turns / max(st.unit_turns,1):>12.0%}"
             f"{st.end_strength / max(st.end_count,1):>8.0f}{opp_rate:>8}")
     add("")
+    add("Economy (games where the first agent played BLUE)")
+    pts = [r for r in records if r.turns]
+    for label, idx in (("start", lambda t: 0), ("mid", lambda t: len(t) // 2),
+                       ("end", lambda t: len(t) - 1)):
+        rows_ = [r.turns[idx(r.turns)] for r in pts]
+        n_ = max(len(rows_), 1)
+        add(f"  {label:<6} PP {blue_name} {sum(t.pp_blue for t in rows_) / n_:>6.0f}"
+            f"  {red_name} {sum(t.pp_red for t in rows_) / n_:>6.0f}"
+            f"   power {sum(t.power_blue for t in rows_) / n_:.2f} / {sum(t.power_red for t in rows_) / n_:.2f}"
+            f"   structures {sum(t.structs_blue for t in rows_) / n_:.1f} / {sum(t.structs_red for t in rows_) / n_:.1f}")
+    lost: Dict[str, int] = {}
+    taken: Dict[str, int] = {}
+    for r in records + swapped:
+        for kind, what, _side in r.structure_events:
+            d = lost if kind == "structure_destroyed" else taken
+            d[what] = d.get(what, 0) + 1
+    add("  structures destroyed: " + (", ".join(f"{k} {v}" for k, v in sorted(lost.items())) or "none"))
+    add("  structures captured:  " + (", ".join(f"{k} {v}" for k, v in sorted(taken.items())) or "none"))
+    causes: Dict[str, int] = {}
+    for r in records + swapped:
+        c = r.meta.get("cause", "?")
+        causes[c] = causes.get(c, 0) + 1
+    add("  game-end causes: " + ", ".join(f"{k} {v}" for k, v in sorted(causes.items())))
+    add("")
     add("Culmination: mean supply by columns advanced from own baseline")
     rows = culmination(records, "BLUE")
     if rows:

@@ -87,6 +87,7 @@ class UnitStats:
     combat_cost: float = P.UNIT_DEFAULT_COMBAT_COST
     cost: int = 0             # production points to build (M4)
     build_turns: int = 0      # turns in a production queue (M4)
+    builds: bool = False      # engineer-like: may Construct structures and Repair them (M4)
 
     @property
     def indirect(self) -> bool:

@@ -61,6 +61,12 @@ class TurnRow:
     net_blue: int       # hexes BLUE can trace land supply to
     net_red: int
     engagements: int
+    pp_blue: float = 0.0        # production points in hand
+    pp_red: float = 0.0
+    power_blue: float = 1.0     # power factor
+    power_red: float = 1.0
+    structs_blue: int = 0       # live structures
+    structs_red: int = 0
 
 
 @dataclass
@@ -86,6 +92,7 @@ class Recorder:
     turns: List[TurnRow] = field(default_factory=list)
     combat: List[CombatRow] = field(default_factory=list)
     meta: Dict[str, str] = field(default_factory=dict)
+    structure_events: List[tuple] = field(default_factory=list)  # (kind, structure type, side)
     _phase: int = 0
     _combat_seen: int = 0
     _types: Dict[int, tuple] = field(default_factory=dict)
@@ -128,6 +135,10 @@ class Recorder:
             net_blue=len(nets.get(Side.BLUE, {}).get(Domain.LAND, ())),
             net_red=len(nets.get(Side.RED, {}).get(Domain.LAND, ())),
             engagements=len(game.combat_log),
+            pp_blue=round(game.pp[Side.BLUE], 1), pp_red=round(game.pp[Side.RED], 1),
+            power_blue=round(game.power[Side.BLUE], 3), power_red=round(game.power[Side.RED], 3),
+            structs_blue=len(game.structures_of(Side.BLUE)),
+            structs_red=len(game.structures_of(Side.RED)),
         ))
 
         for cr in game.combat_log[self._combat_seen:]:
@@ -197,4 +208,8 @@ def play_recorded(blue, red, world, seed: int = 0, max_turns=None):
     winner = game.winner()
     rec.meta["winner"] = winner.name if winner is not None else "DRAW"
     rec.meta["turns"] = str(game.turn)
+    rec.meta["cause"] = game.result[1] if game.result else "none"
+    for e in game.events:
+        if e.kind in ("structure_destroyed", "structure_captured"):
+            rec.structure_events.append((e.kind, e.data["structure"], e.side))
     return game, rec

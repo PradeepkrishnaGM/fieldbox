@@ -11,11 +11,12 @@ traits (aggression, force mix, what to protect, what to target). A population
 of doctrines evolves through league play, and commanders counter-build
 against what they observe within a match.
 
-**Status: M3** — simultaneous-turn (WEGO) engine on generated, point-symmetric
-worlds: both commanders write orders from a snapshot `Observation`, movement
-and combat resolve together, and events are hashed for determinism. Scripted
-and doctrinal agents, Elo arena, CSV telemetry and the map viewer are in.
-Economy, fog of war and evolution are next.
+**Status: M4 (in review)** — adds structures (HQ, industry, power, data
+center, radar, airfield, port, FOB), power, production points and queues,
+command points, engineer-built FOBs, structure-based supply, structure
+combat (assault, bombard, air strike) and HQ-destruction victory on top of the
+M3 simultaneous-turn engine. Scripted agents use a temporary fixed build list
+until the commander arrives (M7). Fog of war and evolution are next.
 
 ## Quick start
 

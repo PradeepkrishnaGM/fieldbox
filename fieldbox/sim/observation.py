@@ -16,8 +16,10 @@ from typing import Dict, List, Optional, Tuple
 
 from ..core.hexgrid import Coord, Domain, HexMap, distance, neighbors
 from . import combat as C
-from .orders import Attack, Bombard, Hold, MoveTo, Order
-from .units import Side, UnitLike, UnitType
+from .orders import Attack, Bombard, Build, Construct, Hold, MoveTo, Order, Repair, Strike
+from .structures import STATS as SSTATS, StructureLike, StructureType
+from .units import STATS as USTATS, Side, UnitLike, UnitType
+from .. import params as P
 
 
 @dataclass(frozen=True)
@@ -34,11 +36,26 @@ class UnitView(UnitLike):
     order: Optional[Order] = None      # own units only: the standing order
 
 
+@dataclass(frozen=True)
+class StructureView(StructureLike):
+    sid: int
+    kind: StructureType
+    side: Side
+    q: int
+    r: int
+    strength: float
+
+
 class Observation:
     def __init__(self, side: Side, turn: int, max_turns: int, world,
                  own_units: Tuple[UnitView, ...], enemy_units: Tuple[UnitView, ...],
                  owner: Dict[int, Optional[Side]], vp: Dict[Side, float],
-                 supply_net: Dict[Domain, frozenset], hq: Dict[Side, Coord]) -> None:
+                 supply_net: Dict[Domain, frozenset], hq: Dict[Side, Coord],
+                 own_structures: Tuple[StructureView, ...] = (),
+                 enemy_structures: Tuple[StructureView, ...] = (),
+                 pp: float = 0.0, cp: int = 0, power: float = 1.0,
+                 queues: Optional[Dict[int, Tuple[Tuple[UnitType, int], ...]]] = None,
+                 building: frozenset = frozenset()) -> None:
         self.side = side
         self.turn = turn
         self.max_turns = max_turns
@@ -50,6 +67,15 @@ class Observation:
         self.vp = vp
         self.supply_net = {side: supply_net}    # own side only
         self.hq = hq
+        self.own_structures = own_structures
+        self.enemy_structures = enemy_structures      # M6 will filter exactly this list
+        self.pp = pp                                  # own production points
+        self.cp = cp                                  # own command points this turn
+        self.power = power                            # own power factor
+        self.queues = queues or {}                    # own: structure id -> ((utype, turns_left), ...)
+        self.building = building                      # hexes where an own engineer is building
+        self._struct_at: Dict[Coord, StructureView] = {
+            st.coord: st for st in own_structures + enemy_structures}
         self._by_coord: Dict[Coord, Dict[Domain, UnitView]] = {}
         for u in own_units + enemy_units:
             self._by_coord.setdefault(u.coord, {})[u.domain] = u
@@ -68,8 +94,18 @@ class Observation:
         own = tuple(view(u, True) for u in game.units_of(side))
         enemy = tuple(view(u, False) for u in game.units_of(side.other))
         nets = {d: frozenset(n) for d, n in game.supply_net.get(side, {}).items()}
+        def sview(st) -> StructureView:
+            return StructureView(st.sid, st.kind, st.side, st.q, st.r, st.strength)
+        own_s = tuple(sview(st) for st in sorted(game.structures_of(side), key=lambda x: x.sid))
+        enemy_s = tuple(sview(st) for st in sorted(game.structures_of(side.other), key=lambda x: x.sid))
+        queues = {st.sid: tuple((i.utype, i.left) for i in game.queues.get(st.sid, ()))
+                  for st in game.structures_of(side)}
+        building = frozenset(v[0] for uid, v in game.constructions.items()
+                             if uid in game.units and game.units[uid].side is side)
         return cls(side, game.turn, game.max_turns, game.world, own, enemy,
-                   dict(game.owner), dict(game.vp), nets, dict(game.hq))
+                   dict(game.owner), dict(game.vp), nets, dict(game.hq),
+                   own_s, enemy_s, game.pp[side], game.cp(side), game.power[side],
+                   queues, building)
 
     # -- queries mirroring the Game API -----------------------------------
 
@@ -101,6 +137,26 @@ class Observation:
             for d, u in self._by_coord.get(n, {}).items():
                 if u.side != side and (domain is None or d is domain):
                     out.append(u)
+        return out
+
+    def structures_of(self, side: Side, kind: Optional[StructureType] = None) -> List[StructureView]:
+        lst = self.own_structures if side == self.side else self.enemy_structures
+        return [s for s in lst if kind is None or s.kind is kind]
+
+    def structure_at(self, coord: Coord) -> Optional[StructureView]:
+        return self._struct_at.get(coord)
+
+    def build_options(self) -> List[Build]:
+        """Every Build order that is legal and affordable right now."""
+        out = []
+        for st in self.own_structures:
+            dom = st.stats.produces
+            if dom is None or len(self.queues.get(st.sid, ())) >= P.ECONOMY.max_queue:
+                continue
+            for t in UnitType:
+                us = USTATS[t]
+                if us.domain is dom and us.cost <= self.pp:
+                    out.append(Build(st.sid, t))
         return out
 
     def objective_holder(self, coord: Coord) -> Optional[Side]:
@@ -143,4 +199,18 @@ class Observation:
         for coord in self.objectives:
             if self.map.passable(coord, st.domain):
                 orders.append(MoveTo(unit.uid, coord))
+        for s in self.enemy_structures:
+            if Domain.LAND not in st.targets:
+                continue
+            if st.domain is Domain.AIR:
+                orders.append(Strike(unit.uid, s.sid))
+            elif st.indirect:
+                if distance(unit.coord, s.coord) <= st.reach:
+                    orders.append(Bombard(unit.uid, s.coord))
+            elif not any(e.coord == s.coord and e.domain is Domain.LAND for e in self.enemy_units):
+                orders.append(Attack(unit.uid, s.sid, structure=True))
+        if st.builds:
+            for s in self.own_structures:
+                if s.strength < 100.0 and distance(unit.coord, s.coord) <= 1:
+                    orders.append(Repair(unit.uid, s.sid))
         return orders

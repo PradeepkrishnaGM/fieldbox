@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from ..sim.units import Side
 from ..sim.observation import UnitView as Unit
 from . import Agent, register
+from .economy import FixedBuilder, engineer_order, structure_order
 
 # Local force ratio required to launch a deliberate attack, by defender terrain.
 RATIO_REQUIRED = {Terrain[t]: r for t, r in P.RATIO_REQUIRED.items()}
@@ -70,9 +71,15 @@ class DoctrineAgent(Agent):
 
     def __init__(self, aggression: float = 1.0) -> None:
         self._approach_cache = {}
+        self.builder = FixedBuilder()
         # <1 makes the agent more cautious, >1 more willing to attack at
         # unfavourable odds. Handy knob for building an opponent pool later.
         self.aggression = aggression
+
+    def reset(self, side, world) -> None:
+        super().reset(side, world)
+        self.builder = FixedBuilder()
+        self._approach_cache = {}
 
     # -- main ------------------------------------------------------------
 
@@ -81,7 +88,7 @@ class DoctrineAgent(Agent):
         mine = obs.units_of(side)
         enemies = obs.units_of(side.other)
         if not mine:
-            return []
+            return self.builder.builds(obs)
 
         plan = Plan(
             main_effort=self._select_main_effort(obs, side),
@@ -100,13 +107,23 @@ class DoctrineAgent(Agent):
                 if step is not None and step != unit.coord:
                     orders[unit.uid] = MoveTo(unit.uid, step)
                     continue
+            if unit.stats.builds:
+                eng = engineer_order(obs, unit)
+                if eng is not None:
+                    orders[unit.uid] = eng
+                    continue
+            if not enemies:                 # nothing left to fight: take the structures
+                so = structure_order(obs, unit)
+                if so is not None:
+                    orders[unit.uid] = so
+                    continue
             expand = self._expand(obs, side, unit, enemies, plan)
             if expand is not None:
                 orders[unit.uid] = expand
                 continue
             handler = getattr(self, f"_{self._role(unit)}")
             orders[unit.uid] = handler(obs, side, unit, enemies, plan)
-        return [orders[uid] for uid in sorted(orders)]
+        return [orders[uid] for uid in sorted(orders)] + self.builder.builds(obs)
 
     # -- expansion ----------------------------------------------------------
 

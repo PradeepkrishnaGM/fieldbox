@@ -21,6 +21,16 @@ ORDER_REJECTED = "order_rejected"
 SUPPLY_CUT = "supply_cut"
 GAME_OVER = "game_over"
 TURN_END = "turn_end"
+# M4
+STRUCTURE_DAMAGED = "structure_damaged"
+STRUCTURE_DESTROYED = "structure_destroyed"
+STRUCTURE_CAPTURED = "structure_captured"
+BUILD_QUEUED = "build_queued"
+UNIT_BUILT = "unit_built"
+FOB_STARTED = "fob_started"
+FOB_BUILT = "fob_built"
+ORDERS_CAPPED = "orders_capped"
+POWER_LOW = "power_low"
 
 
 @dataclass(frozen=True)

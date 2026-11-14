@@ -333,7 +333,7 @@ class TestFairness(unittest.TestCase):
         pts = 0.0
         for i in range(40):
             w = generate_world(1 + i % 4, "tiny")
-            r = play_match(RandomAgent(1), RandomAgent(2), w, seed=i)
+            r = play_match(RandomAgent(7), RandomAgent(7), w, seed=i)     # identical agents
             pts += 1.0 if r.winner == Side.BLUE else 0.5 if r.winner is None else 0.0
         self.assertTrue(0.40 <= pts / 40 <= 0.60, pts / 40)
 
@@ -343,10 +343,10 @@ class TestGolden(unittest.TestCase):
     must be deliberate and re-pinned with a reason in DECISIONS.md."""
 
     GOLDEN = [
-        '696c3d76a24ccdd5e4a4d828fe22cd94095cada5995134c3cced4ca96fc62b55',
-        'fa24544becea3ff4e0c7d9c813b014e527857cd5029051ede4631bf3907d7fd1',
-        'c61f92109416b028908dc292e3dbaf57081f4fb262769451c981a92c947e94d4',
-        'e07e36cdf9f9878f1fcdefee99f77cd821075b3010553270e93a6ff548b1e250',
+        '0cc240dbc654daebc34cce347c1bd4f2f72f60af5b1b80f154f6cf237902cfd5',
+        '1c487220933f21c846e379cea76fea798878cb16b9e17c17cc802a683ed025e2',
+        '139fefc8783bb99301c3f00c6261b3f5123c61d2188964d4e21e90c81469c2c1',
+        '09e421a36c095df8569d9a927dcc0c9ad199053a96164410cbb65cc5707715df',
     ]
 
     def _hashes(self):

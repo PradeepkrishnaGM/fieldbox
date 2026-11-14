@@ -66,3 +66,10 @@ def assault_losses(odds: float, jitter_d: float, jitter_a: float):
 
 def fire_loss(odds: float, jitter: float) -> float:
     return clamp_loss(BASE_LOSS * (odds ** 0.70) * jitter)
+
+
+def structure_defense(structure, hexmap: HexMap) -> float:
+    """A structure defends like a unit with no entrenchment and no supply
+    effects; its own strength scales it (PLAN.md §3.3)."""
+    terr = hexmap.def_mult(structure.coord, Domain.LAND)
+    return max((structure.strength / 100.0) * structure.stats.defense * terr, 1e-6)

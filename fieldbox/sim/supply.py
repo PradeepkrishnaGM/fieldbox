@@ -30,12 +30,10 @@ from ..core.hexgrid import Coord, Domain, HexMap, neighbors
 
 SUPPLY_MAX = P.SUPPLY.supply_max
 
-# Movement-point budget for tracing supply out from a depot. Roads are cheap,
-# so a road net projects supply much further than open country -- which is
-# the whole reason roads matter operationally.
-SUPPLY_RANGE: Dict[Domain, float] = {
-    Domain[d]: r for d, r in P.SUPPLY.supply_range
-}
+HQ_BUDGET = P.SUPPLY.hq_supply_budget
+FOB_BUDGET = P.SUPPLY.fob_supply_budget
+PORT_BUDGET = P.SUPPLY.port_sea_budget
+AIR_REARM_RADIUS = P.SUPPLY.air_rearm_radius
 
 RESUPPLY_RATE = P.SUPPLY.resupply_rate
 DRAIN_RATE = P.SUPPLY.drain_rate
@@ -75,7 +73,7 @@ def trace_network(
     sources: List[Coord],
     domain: Domain,
     blocked: Optional[Set[Coord]] = None,
-    budget: Optional[float] = None,
+    budget: float = 0.0,
 ) -> Set[Coord]:
     """Hexes reachable from `sources` within a movement-cost budget.
 
@@ -83,8 +81,6 @@ def trace_network(
     them. Sources themselves are always in supply, so a depot cannot be
     starved by a unit parked next to it.
     """
-    if budget is None:
-        budget = SUPPLY_RANGE[domain]
     blocked = blocked or set()
     adj = hex_map.adjacency(domain)
     best: Dict[Coord, float] = {}

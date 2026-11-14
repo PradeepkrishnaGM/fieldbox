@@ -15,8 +15,8 @@ Design notes
 * The engine contains no unit-type branches. Everything a unit may do comes
   from `UnitStats` -- domain, `targets`, `reach`, `can_capture`,
   `entrenches`.
-* M3 scope: no structures, economy or command points. Supply sources are
-  the start positions (land/air: HQ; sea: water next to the start port).
+* M4 adds structures, the economy (PP, power, production queues), command
+  points, FOB construction and structure-based supply and victory.
 """
 
 from __future__ import annotations
@@ -29,11 +29,18 @@ from ..core.rng import make_rng
 from . import combat as C
 from . import events as E
 from .events import Event
-from .orders import ORDER_TYPES, Attack, Bombard, Hold, MoveTo, Order
-from .supply import (DRAIN_RATE, REPAIR_CAP, REPAIR_RATE, RESUPPLY_RATE,
-                     STARVATION_LOSS, SUPPLY_EFFECTIVE, SUPPLY_MAX, interdicted,
-                     trace_network)
-from .units import MAX_ENTRENCH, Side, Unit, UnitType
+from .. import params as P
+from .orders import (ORDER_TYPES, Attack, Bombard, Build, Construct, Hold, MoveTo,
+                     Order, Repair, Strike)
+from .structures import STATS as SSTATS
+from .structures import STRUCTURE_VP, Structure, StructureType as ST
+from .supply import (AIR_REARM_RADIUS, DRAIN_RATE, FOB_BUDGET, HQ_BUDGET, PORT_BUDGET,
+                     REPAIR_CAP, REPAIR_RATE, RESUPPLY_RATE, STARVATION_LOSS,
+                     SUPPLY_EFFECTIVE, SUPPLY_MAX, interdicted, trace_network)
+from .units import MAX_ENTRENCH, STATS as USTATS, Side, Unit, UnitType
+
+ECO = P.ECONOMY
+MIN_UNIT_COST = min(st.cost for st in USTATS.values() if st.cost > 0)
 
 # Re-exported so older imports (`from fieldbox.sim.engine import Hold`) work.
 __all__ = ["Game", "CombatResult", "Hold", "MoveTo", "Attack", "Bombard", "Order"]
@@ -49,6 +56,12 @@ class CombatResult:
     attacker_loss: float
     defender_loss: float
     defender_destroyed: bool
+
+
+@dataclass
+class QueueItem:
+    utype: UnitType
+    left: int
 
 
 class Game:
@@ -80,8 +93,21 @@ class Game:
         self.result: Optional[Tuple[Optional[Side], str]] = None
         self.hq: Dict[Side, Coord] = dict(world.hq)
         self.supply_net: Dict[Side, Dict[Domain, set]] = {}
-        self._depots = self._make_depots()
+        # --- M4 state
+        self.structures: Dict[int, Structure] = {}
+        for i, ps in enumerate(world.structures):
+            self.structures[i] = Structure(i, ST[ps.kind], ps.side, ps.coord[0], ps.coord[1])
+        self._struct_at: Dict[Coord, Structure] = {s.coord: s for s in self.structures.values()}
+        self._next_sid = len(world.structures)
+        self._next_uid = max(self.units, default=-1) + 1
+        self.pp: Dict[Side, float] = {s: float(world.params.start.start_pp) for s in Side}
+        self.queues: Dict[int, List[QueueItem]] = {}
+        self.constructions: Dict[int, list] = {}      # engineer uid -> [coord, kind, turns_left]
+        self.power: Dict[Side, float] = {s: 1.0 for s in Side}
+        self._attacked: set = set()                   # structure ids hit this turn
         self._static_net: Dict[tuple, set] = {}
+        for s in Side:
+            self.power[s] = self._power_factor(s)
         for s in (Side.BLUE, Side.RED):
             self._update_supply(s, emit=False)
 
@@ -121,6 +147,25 @@ class Game:
                     if u.side != side and (domain is None or d is domain):
                         out.append(u)
         return out
+
+    # -- structures, power, command ---------------------------------------
+
+    def structures_of(self, side: Side, kind: Optional[ST] = None) -> List[Structure]:
+        return [s for s in self.structures.values()
+                if s.side is side and (kind is None or s.kind is kind)]
+
+    def structure_at(self, coord: Coord) -> Optional[Structure]:
+        return self._struct_at.get(coord)
+
+    def _power_factor(self, side: Side) -> float:
+        supply = sum(ECO.power_output * s.strength / 100.0
+                     for s in self.structures_of(side, ST.POWER))
+        demand = sum(s.stats.power_demand for s in self.structures_of(side))
+        return 1.0 if demand <= 0 else max(0.0, min(1.0, supply / demand))
+
+    def cp(self, side: Side) -> int:
+        dc = min(1.0, sum(s.strength for s in self.structures_of(side, ST.DATACENTER)) / 100.0)
+        return ECO.cp_base + int(ECO.cp_datacenter * dc * self.power[side])
 
     @property
     def objectives(self) -> Dict[Coord, int]:
@@ -171,6 +216,7 @@ class Game:
         self._phase_combat()
         self._phase_captures()
         self._phase_logistics()
+        self._phase_economy()
         self._phase_score()
         self._emit(E.TURN_END)
         self.turn += 1
@@ -190,6 +236,14 @@ class Game:
         if isinstance(o, MoveTo):
             if not self.map.in_bounds(o.dest) or not self.map.passable(o.dest, u.domain):
                 return "destination impassable"
+        elif isinstance(o, Attack) and o.structure:
+            s = self.structures.get(o.target)
+            if s is None or s.side is side:
+                return "no such enemy structure"
+            if u.stats.indirect or u.domain is Domain.AIR or Domain.LAND not in u.stats.targets:
+                return "cannot assault a structure"
+            if self.enemy_land_at(s.coord, side) is not None:
+                return "structure is defended"
         elif isinstance(o, Attack):
             t = self.units.get(o.target)
             if t is None or t.side == side:
@@ -201,23 +255,98 @@ class Game:
                 return "not a ranged unit"
             if not self.map.in_bounds(o.dest):
                 return "off the map"
+        elif isinstance(o, Strike):
+            s = self.structures.get(o.sid)
+            if s is None or s.side is side:
+                return "no such enemy structure"
+            if u.domain is not Domain.AIR or Domain.LAND not in u.stats.targets:
+                return "not a strike aircraft"
+        elif isinstance(o, Construct):
+            if not u.stats.builds:
+                return "cannot build"
+            if o.kind is not ST.FOB:
+                return "only FOBs can be built"
+            if not self.map.in_bounds(o.coord) or distance(u.coord, o.coord) > 1 \
+                    or not self.map.passable(o.coord, Domain.LAND):
+                return "site out of reach or impassable"
+            if o.coord in self._struct_at:
+                return "site already has a structure"
+        elif isinstance(o, Repair):
+            s = self.structures.get(o.sid)
+            if not u.stats.builds:
+                return "cannot repair"
+            if s is None or s.side is not side or distance(u.coord, s.coord) > 1:
+                return "no friendly structure in reach"
         return None
 
+    def enemy_land_at(self, coord: Coord, side: Side) -> Optional[Unit]:
+        u = self.unit_at(coord, Domain.LAND)
+        return u if u is not None and u.side != side else None
+
+    def _reject(self, side: Side, o, reason: str) -> None:
+        self._emit(E.ORDER_REJECTED, side, uid=getattr(o, "uid", getattr(o, "sid", None)),
+                   order=repr(o), reason=reason)
+
+    def _do_build(self, o: Build, side: Side) -> None:
+        s = self.structures.get(o.sid)
+        if s is None or s.side is not side:
+            return self._reject(side, o, "no such structure")
+        dom = s.stats.produces
+        ust = USTATS.get(o.utype)
+        if dom is None or ust is None or ust.domain is not dom:
+            return self._reject(side, o, "structure cannot build that")
+        q = self.queues.setdefault(s.sid, [])
+        if len(q) >= ECO.max_queue:
+            return self._reject(side, o, "queue full")
+        if self.pp[side] < ust.cost:
+            return self._reject(side, o, "not enough PP")
+        self.pp[side] -= ust.cost
+        q.append(QueueItem(o.utype, ust.build_turns))
+        self._emit(E.BUILD_QUEUED, side, sid=s.sid, utype=o.utype.name)
+
     def _phase_orders(self, orders: Dict[Side, List[Order]]) -> None:
+        self._attacked = set()
         for side in (Side.BLUE, Side.RED):
             seen = set()
+            cp, used, dropped = self.cp(side), 0, 0
             for o in orders.get(side, ()) or ():
+                if isinstance(o, Build):
+                    self._do_build(o, side)
+                    continue
                 reason = self._illegal(o, side)
                 if reason is None and o.uid in seen:
                     reason = "second order for the unit"
                 if reason is not None:
-                    self._emit(E.ORDER_REJECTED, side, uid=getattr(o, "uid", None),
-                               order=repr(o), reason=reason)
+                    self._reject(side, o, reason)
                     continue
                 seen.add(o.uid)
+                if self.standing.get(o.uid) == o:
+                    continue                  # re-issued as is: changes nothing, costs no CP
+                if used >= cp:
+                    dropped += 1
+                    continue
+                if isinstance(o, Construct) and self.pp[side] < ECO.fob_cost:
+                    self._reject(side, o, "not enough PP")
+                    continue
+                used += 1
+                self.constructions.pop(o.uid, None)    # a new order abandons a build site
+                if isinstance(o, Construct):
+                    self.pp[side] -= ECO.fob_cost
+                    self.constructions[o.uid] = [o.coord, o.kind, ECO.fob_build_turns]
+                    self._emit(E.FOB_STARTED, side, uid=o.uid, coord=list(o.coord))
                 self.standing[o.uid] = o
+            if dropped:
+                self._emit(E.ORDERS_CAPPED, side, dropped=dropped, cp=cp)
 
     # 2. movement ----------------------------------------------------------
+
+    def _target_coord(self, o) -> Optional[Coord]:
+        if isinstance(o, Strike) or (isinstance(o, Attack) and o.structure):
+            sid = o.sid if isinstance(o, Strike) else o.target
+            st = self.structures.get(sid)
+            return None if st is None else st.coord
+        t = self.units.get(o.target)
+        return None if t is None else t.coord
 
     def _phase_movement(self) -> None:
         plans: Dict[int, List[Coord]] = {}
@@ -230,10 +359,10 @@ class Game:
             if isinstance(o, MoveTo) and u.coord != o.dest:
                 path = self.map.find_path(u.coord, o.dest,
                                           self.occupied(u.domain, exclude=uid), u.domain)
-            elif isinstance(o, Attack):
-                t = self.units.get(o.target)
-                if t is not None and distance(u.coord, t.coord) > 1:
-                    path = self.map.find_path(u.coord, t.coord,
+            elif isinstance(o, (Attack, Strike)):
+                tc = self._target_coord(o)
+                if tc is not None and distance(u.coord, tc) > 1:
+                    path = self.map.find_path(u.coord, tc,
                                               self.occupied(u.domain, exclude=uid), u.domain)
                     path = path[:-1] if path else None      # stop adjacent
             if path:
@@ -299,19 +428,29 @@ class Game:
 
     def _phase_combat(self) -> None:
         engagements: List[Tuple[Unit, Unit, str]] = []
+        s_eng: List[Tuple[Unit, Structure, str]] = []
         for uid in sorted(self.standing):
             u = self.units.get(uid)
             o = self.standing[uid]
             if u is None:
                 continue
-            if isinstance(o, Attack):
+            if isinstance(o, Attack) and not o.structure:
                 t = self.units.get(o.target)
                 if t is not None and distance(u.coord, t.coord) == 1 and u.can_engage(t):
                     engagements.append((u, t, "assault"))
+            elif isinstance(o, (Strike, Attack)):
+                st = self.structures.get(o.sid if isinstance(o, Strike) else o.target)
+                if st is not None and distance(u.coord, st.coord) == 1 \
+                        and self.enemy_land_at(st.coord, u.side) is None:
+                    s_eng.append((u, st, "assault"))
             elif isinstance(o, Bombard) and distance(u.coord, o.dest) <= u.stats.reach:
                 t = self._target_at(u, o.dest)
                 if t is not None:
                     engagements.append((u, t, "fire"))
+                else:
+                    st = self._struct_at.get(o.dest)
+                    if st is not None and st.side is not u.side and Domain.LAND in u.stats.targets:
+                        s_eng.append((u, st, "fire"))
         # Air defence fires on its own when it has nothing else to do.
         for u in list(self.units.values()):
             st = u.stats
@@ -322,12 +461,13 @@ class Game:
                        and e.domain is Domain.AIR and distance(u.coord, e.coord) <= st.reach]
                 if air:
                     engagements.append((u, max(air, key=lambda e: (e.strength, -e.uid)), "fire"))
-        if not engagements:
+        if not engagements and not s_eng:
             return
 
         rng = make_rng(self.seed, "combat", self.turn)
         loss: Dict[int, float] = {}
         cost: Dict[int, float] = {}
+        sloss: Dict[int, float] = {}
         assaults: List[Tuple[Unit, Unit]] = []
         for a, d, kind in engagements:       # all from pre-combat state
             if kind == "assault":
@@ -347,17 +487,34 @@ class Game:
             self._emit(E.ENGAGED, a.side, attacker=a.uid, defender=d.uid, mode=kind,
                        odds=round(odds, 6), attacker_loss=round(al, 6), defender_loss=round(dl, 6))
             self.combat_log.append(CombatResult(a.uid, d.uid, odds, al, dl, False))
+        for a, st, kind in s_eng:            # no return fire from a structure
+            ap = (C.attack_power(a, st, self.map, 0) if kind == "assault" else C.fire_power(a))
+            odds = ap / C.structure_defense(st, self.map)
+            dl = C.fire_loss(odds, JITTER_LO + JITTER_SPAN * rng.random())
+            sloss[st.sid] = sloss.get(st.sid, 0.0) + dl
+            cost[a.uid] = cost.get(a.uid, 0.0) + a.stats.combat_cost
+            self._emit(E.STRUCTURE_DAMAGED, a.side, attacker=a.uid, sid=st.sid, mode=kind,
+                       odds=round(odds, 6), loss=round(dl, 6))
         for a, d, kind in engagements:
+            if kind == "assault":
+                a.entrench = 0
+        for a, st, kind in s_eng:
             if kind == "assault":
                 a.entrench = 0
         for uid in sorted(loss):
             self.units[uid].strength -= loss[uid]
+        for sid in sorted(sloss):
+            st = self.structures[sid]
+            st.strength -= sloss[sid]
+            self._attacked.add(sid)
+            if st.strength <= 0.0:
+                self._destroy_structure(st)
         for uid in sorted(cost):
             u = self.units[uid]
             u.supply = max(0.0, u.supply - cost[uid])
         dead = [u for u in self.units.values() if u.strength <= 0.0]
         dead_ids = {u.uid for u in dead}
-        for cr in self.combat_log[-len(engagements):]:
+        for cr in self.combat_log[len(self.combat_log) - len(engagements):]:
             cr.defender_destroyed = cr.defender in dead_ids
         freed = {u.uid: u.coord for u in dead}
         for u in dead:
@@ -376,10 +533,25 @@ class Game:
         for uid, o in list(self.standing.items()):
             if uid not in self.units:
                 del self.standing[uid]
-            elif isinstance(o, Attack) and o.target not in self.units:
+            elif isinstance(o, Attack) and not o.structure and o.target not in self.units:
                 del self.standing[uid]
-            elif isinstance(o, Bombard) and self._target_at(self.units[uid], o.dest) is None:
+            elif isinstance(o, Attack) and o.structure and o.target not in self.structures:
                 del self.standing[uid]
+            elif isinstance(o, Strike) and o.sid not in self.structures:
+                del self.standing[uid]
+            elif isinstance(o, Bombard) and self._target_at(self.units[uid], o.dest) is None \
+                    and not (o.dest in self._struct_at and self._struct_at[o.dest].side is not self.units[uid].side):
+                del self.standing[uid]
+
+    def _destroy_structure(self, st: Structure) -> None:
+        self.structures.pop(st.sid, None)
+        if self._struct_at.get(st.coord) is st:
+            del self._struct_at[st.coord]
+        self.queues.pop(st.sid, None)
+        vp = STRUCTURE_VP[st.kind]
+        self.vp[st.side.other] += vp
+        self._emit(E.STRUCTURE_DESTROYED, st.side, sid=st.sid, structure=st.kind.name,
+                   coord=list(st.coord), vp=vp)
 
     def _can_occupy(self, unit: Unit, coord: Coord) -> bool:
         if not self.map.passable(coord, unit.domain):
@@ -397,32 +569,51 @@ class Game:
                 self.owner[p.id] = holder.side
                 self._emit(E.PROVINCE_FLIPPED, holder.side, province=p.id,
                            previous=None if prev is None else int(prev))
+        for sid in sorted(self.structures):
+            st = self.structures[sid]
+            if not st.stats.capturable:
+                continue
+            u = self.unit_at(st.coord, Domain.LAND)
+            if u is not None and u.stats.can_capture and u.side is not st.side:
+                prev = st.side
+                st.side = u.side
+                st.strength = min(st.strength, ECO.capture_strength_cap)
+                self.queues.pop(sid, None)
+                self._emit(E.STRUCTURE_CAPTURED, u.side, sid=sid, structure=st.kind.name,
+                           previous=int(prev))
 
     # 5. logistics ---------------------------------------------------------
 
-    def _make_depots(self) -> Dict[Tuple[Side, Domain], List[Coord]]:
-        t = self.map.terrain
-        out = {}
-        for side in (Side.BLUE, Side.RED):
-            hq = self.hq[side]
-            ports = [s.coord for s in self.world.structures if s.side is side and s.kind == "PORT"]
-            sea = sorted({n for p in ports for n in neighbors(*p) if t.get(n) is Terrain.WATER})
-            out[(side, Domain.LAND)] = [hq]
-            out[(side, Domain.AIR)] = [hq]
-            out[(side, Domain.SEA)] = sea
-        return out
+    def _ring(self, center: Coord, d: int) -> List[Coord]:
+        out = []
+        for dq in range(-d, d + 1):
+            for dr in range(-d, d + 1):
+                c = (center[0] + dq, center[1] + dr)
+                if self.map.in_bounds(c) and distance(c, center) == d:
+                    out.append(c)
+        return sorted(out)
 
     def _update_supply(self, side: Side, emit: bool = True) -> None:
-        nets: Dict[Domain, set] = {}
-        for domain in Domain:
-            if domain is Domain.LAND:
-                nets[domain] = trace_network(self.map, self._depots[(side, domain)], domain,
-                                             interdicted(self, side))
-                continue
-            key = (side, domain)
-            if key not in self._static_net:     # air/sea are not interdicted by ground
-                self._static_net[key] = trace_network(self.map, self._depots[key], domain)
-            nets[domain] = self._static_net[key]
+        t = self.map.terrain
+        hq = [s.coord for s in self.structures_of(side, ST.HQ)]
+        fob = [s.coord for s in self.structures_of(side, ST.FOB)]
+        blocked = interdicted(self, side)
+        land = (trace_network(self.map, hq, Domain.LAND, blocked, HQ_BUDGET)
+                | trace_network(self.map, fob, Domain.LAND, blocked, FOB_BUDGET))
+        # Air: a radius around airfields and FOBs (not a trace); static per source set.
+        air_src = tuple(sorted(s.coord for s in self.structures_of(side)
+                               if s.kind in (ST.AIRFIELD, ST.FOB)))
+        key = (side, "air", air_src)
+        if key not in self._static_net:
+            self._static_net[key] = {c for src in air_src for d in range(AIR_REARM_RADIUS + 1)
+                                     for c in self._ring(src, d)}
+        sea_src = tuple(sorted({n for s in self.structures_of(side, ST.PORT)
+                                for n in neighbors(*s.coord) if t.get(n) is Terrain.WATER}))
+        key2 = (side, "sea", sea_src)
+        if key2 not in self._static_net:
+            self._static_net[key2] = trace_network(self.map, list(sea_src), Domain.SEA, None, PORT_BUDGET)
+        nets = {Domain.LAND: land, Domain.AIR: self._static_net[key],
+                Domain.SEA: self._static_net[key2]}
         self.supply_net[side] = nets
         for u in self.units_of(side):
             was = u.in_supply
@@ -448,20 +639,126 @@ class Game:
                         if u.strength <= 0.0:
                             self._kill(u, "starvation")
 
+    # 6. economy -----------------------------------------------------------
+
+    def _region_bonus(self, side: Side) -> int:
+        total = 0
+        for rg in self.world.regions:
+            if all(self.owner.get(pid) is side for pid in rg.provinces):
+                total += rg.bonus
+        return total
+
+    def _phase_economy(self) -> None:
+        for side in Side:
+            old = self.power[side]
+            pf = self.power[side] = self._power_factor(side)
+            if pf < 1.0 and (pf < old or old >= 1.0):
+                self._emit(E.POWER_LOW, side, factor=round(pf, 4))
+            hq = sum(st.strength for st in self.structures_of(side, ST.HQ)) / 100.0
+            income = ECO.hq_income * min(1.0, hq)
+            income += sum(ECO.industry_income * st.strength / 100.0 * pf
+                          for st in self.structures_of(side, ST.INDUSTRY))
+            income += sum(p.value for p in self.world.provinces if self.owner.get(p.id) is side)
+            income += self._region_bonus(side)
+            self.pp[side] += income
+        # Production: the head of each queue advances; finished units spawn
+        # on the nearest free hex (contention is settled by a seeded shuffle).
+        order = sorted(self.queues)
+        make_rng(self.seed, "spawn", self.turn).shuffle(order)
+        for sid in order:
+            st = self.structures.get(sid)
+            q = self.queues.get(sid)
+            if st is None or not q:
+                continue
+            item = q[0]
+            if item.left > 0:
+                item.left -= 1
+            if item.left == 0:
+                site = self._spawn_site(st, USTATS[item.utype].domain)
+                if site is not None:
+                    q.pop(0)
+                    u = Unit(self._next_uid, st.side, item.utype, site[0], site[1])
+                    self._next_uid += 1
+                    self.units[u.uid] = u
+                    self._by_coord.setdefault(u.coord, {})[u.domain] = u
+                    u.in_supply = u.coord in self.supply_net.get(u.side, {}).get(u.domain, ())
+                    self._emit(E.UNIT_BUILT, st.side, uid=u.uid, utype=item.utype.name,
+                               sid=sid, coord=list(site))
+        # FOB construction and engineer repairs.
+        for uid in sorted(self.constructions):
+            eng = self.units.get(uid)
+            site, kind, left = self.constructions[uid]
+            if eng is None or distance(eng.coord, site) > 1 or site in self._struct_at:
+                del self.constructions[uid]
+                continue
+            self.constructions[uid][2] = left = left - 1
+            if left <= 0:
+                st = Structure(self._next_sid, kind, eng.side, site[0], site[1])
+                self._next_sid += 1
+                self.structures[st.sid] = st
+                self._struct_at[site] = st
+                del self.constructions[uid]
+                self.standing[uid] = Hold(uid)
+                self._emit(E.FOB_BUILT, eng.side, sid=st.sid, coord=list(site))
+        repaired = set()
+        for uid in sorted(self.standing):
+            o = self.standing[uid]
+            if not isinstance(o, Repair):
+                continue
+            eng, st = self.units.get(uid), self.structures.get(o.sid)
+            if eng is None or st is None or st.side is not eng.side or distance(eng.coord, st.coord) > 1:
+                del self.standing[uid]
+                continue
+            st.strength = min(100.0, st.strength + ECO.engineer_repair_rate)
+            repaired.add(st.sid)
+            if st.strength >= 100.0:
+                self.standing[uid] = Hold(uid)
+        for st in sorted(self.structures.values(), key=lambda x: x.sid):
+            if st.sid in self._attacked or st.strength >= 100.0:
+                continue
+            if st.coord in self.supply_net.get(st.side, {}).get(Domain.LAND, ()):
+                st.strength = min(100.0, st.strength + ECO.structure_repair_rate)
+        for s in Side:
+            self._update_supply(s, emit=False)
+
+    def _spawn_site(self, st: Structure, domain: Domain, max_d: int = 6) -> Optional[Coord]:
+        # Ties between equally near hexes are broken in the owner's frame
+        # (RED's coordinates mirrored), so neither side's reinforcements
+        # drift toward one map corner.
+        key = (lambda c: c) if st.side is Side.BLUE else self.world.mirror
+        for d in range(max_d + 1):
+            for c in sorted(self._ring(st.coord, d), key=key):
+                if self.map.passable(c, domain) and self.unit_at(c, domain) is None:
+                    return c
+        return None
+
     # 7. scoring and victory -------------------------------------------------
+
+    def _can_fight(self, side: Side) -> bool:
+        if self.units_of(side):
+            return True
+        if any(self.queues.get(st.sid) for st in self.structures_of(side)):
+            return True
+        return self.pp[side] >= MIN_UNIT_COST and any(
+            st.stats.produces is not None for st in self.structures_of(side))
 
     def _phase_score(self) -> None:
         for p in self.world.provinces:
             own = self.owner.get(p.id)
             if own is not None:
                 self.vp[own] += p.value
-        blue, red = self.units_of(Side.BLUE), self.units_of(Side.RED)
-        if not blue or not red:
-            winner = Side.BLUE if blue else Side.RED if red else None
-            self.result = (winner, "annihilation")
-        elif self.turn + 1 >= self.max_turns:
-            b, r = self.vp[Side.BLUE], self.vp[Side.RED]
-            self.result = (Side.BLUE if b > r else Side.RED if r > b else None, "turn_limit")
+        no_hq = [s for s in Side if not self.structures_of(s, ST.HQ)]
+        if no_hq:
+            winner = None if len(no_hq) == 2 else no_hq[0].other
+            self.result = (winner, "hq_destroyed")
+        else:
+            blue, red = self._can_fight(Side.BLUE), self._can_fight(Side.RED)
+            if not blue or not red:
+                winner = Side.BLUE if blue else Side.RED if red else None
+                self.result = (winner, "annihilation")
+            elif self.turn + 1 >= self.max_turns:
+                b, r = self.vp[Side.BLUE], self.vp[Side.RED]
+                self.result = (Side.BLUE if b > r else Side.RED if r > b else None, "turn_limit")
         if self.result is not None:
             w = self.result[0]
             self._emit(E.GAME_OVER, w, winner=None if w is None else w.name, cause=self.result[1],

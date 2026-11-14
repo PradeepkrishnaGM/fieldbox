@@ -46,11 +46,15 @@ COMBAT = CombatParams()
 @dataclass(frozen=True)
 class SupplyParams:
     supply_max: float = 100.0           # full stock
-    # Movement-point budget for tracing supply out from a depot, per domain.
-    # Calibrated so a side's supply reaches about two thirds of the map; at
-    # 13 the road net covered 87% of the board and supply meant nothing.
-    supply_range: Tuple[Tuple[str, float], ...] = (
-        ("LAND", 7.0), ("AIR", 6.0), ("SEA", 12.0))
+    # Supply sources (PLAN.md §3.10). Land supply is traced from the HQ and
+    # from FOBs with a movement-point budget each; roads stretch it. Sea
+    # supply is traced over water from each own port. Aircraft rearm within a
+    # hex radius of an own airfield or FOB (a radius, not a trace).
+    hq_supply_budget: float = 12.0      # land trace budget from the HQ
+    fob_supply_budget: float = 6.0      # land trace budget from each FOB
+    port_sea_budget: float = 20.0       # sea trace budget from each port
+    air_rearm_radius: int = 2           # aircraft within this many hexes of an airfield/FOB are in supply
+    fob_air_capacity: int = 2           # aircraft a FOB can rearm per turn (stub until air capacity matters)
     resupply_rate: float = 34.0         # in supply: full stock in about three turns
     drain_rate: float = 16.0            # out of supply: dry in about six turns
     starvation_loss: float = 4.0        # strength lost per turn at zero stock
@@ -164,7 +168,7 @@ UNIT_STATS: Dict[str, dict] = {
                      cost=25, build_turns=2,
                      label="ENG", glyph="E", sidc_function="UCE---",
                      domain="LAND", targets=("LAND",),
-                     can_capture=False, entrenches=True),
+                     can_capture=False, entrenches=True, builds=True),
 }
 UNIT_DEFAULT_UPKEEP = 2.0         # supply per turn when a unit sets no upkeep
 UNIT_DEFAULT_COMBAT_COST = 10.0   # supply per attack when a unit sets none
@@ -211,6 +215,12 @@ EXPOSURE_PENALTY = 0.30     # extra force ratio demanded per uncovered flank
 SAM_MIN_STANDOFF = 3        # air defence cannot fight ground: keep clear
 AIR_COVER_BONUS = 8.0       # value of sitting under a friendly SAM umbrella
 EXPANSION_SAFE_RADIUS = 4    # NEW (M3): fast capturing units expand to unheld capitals while no enemy land unit is this close
+# Temporary build behaviour (M4) for the scripted agents until the M7 commander.
+TEMP_BUILD_LIST = ("INFANTRY", "TANK", "ARTILLERY", "SAM")  # round-robin at land-producing structures
+TEMP_AIR_BUILD_LIST = ("HELICOPTER", "JET")                 # round-robin at airfields (a second PP sink)
+TEMP_MAX_FOBS = 2           # engineers stop building FOBs once this many exist (or are being built)
+TEMP_FOB_SPACING = 4        # a new FOB must be at least this far from the HQ and other FOBs
+TEMP_QUEUE_DEPTH = 2        # never queue more than this many units per structure
 THREAT_RADIUS = 2           # NEW (M3): infantry keeps holding a taken capital while an enemy that can capture is this close
 
 # Scripted agents
@@ -277,6 +287,41 @@ class StartParams:
         ("INFANTRY", 4), ("TANK", 2), ("IFV", 2), ("RECON", 1),
         ("ARTILLERY", 2), ("SAM", 1), ("ENGINEER", 1),
         ("HELICOPTER", 1), ("JET", 1), ("SHIP", 1))
+
+
+@dataclass(frozen=True)
+class EconomyParams:
+    hq_income: int = 10                 # PP per turn from the HQ (x strength)
+    industry_income: int = 15           # PP per turn per industry (x strength x power factor)
+    power_output: int = 20              # power one power plant supplies (x strength)
+    max_queue: int = 3                  # production queue depth per producing structure
+    fob_cost: int = 40                  # PP, paid when the engineer is ordered to build a FOB
+    fob_build_turns: int = 3            # turns an engineer needs to finish a FOB
+    structure_repair_rate: float = 2.0  # strength regained per turn in supply and not attacked
+    engineer_repair_rate: float = 10.0  # extra strength per turn from an engineer's Repair order
+    capture_strength_cap: float = 50.0  # a captured structure keeps at most this strength
+    cp_base: int = 4                    # command points with no data center
+    cp_datacenter: int = 8              # extra command points from a full-strength, fully powered data center
+    # One-time VP for destroying an enemy structure, by type.
+    structure_vp: Tuple[Tuple[str, int], ...] = (
+        ("HQ", 0), ("INDUSTRY", 6), ("POWER", 5), ("DATACENTER", 8),
+        ("RADAR", 2), ("AIRFIELD", 5), ("PORT", 4), ("FOB", 2))
+
+
+ECONOMY = EconomyParams()
+
+# Structure table (PLAN.md §3.3): defence, capturable, power demand, what it
+# builds. `produces` is the domain of units it can build, or None.
+STRUCTURE_STATS: Dict[str, dict] = {
+    "HQ": dict(defense=2.0, capturable=False, power_demand=0, produces="LAND", label="HQ"),
+    "INDUSTRY": dict(defense=0.8, capturable=True, power_demand=8, produces="LAND", label="IND"),
+    "POWER": dict(defense=0.7, capturable=True, power_demand=0, produces=None, label="PWR"),
+    "DATACENTER": dict(defense=0.9, capturable=False, power_demand=10, produces=None, label="DC"),
+    "RADAR": dict(defense=0.5, capturable=True, power_demand=2, produces=None, label="RDR"),
+    "AIRFIELD": dict(defense=0.8, capturable=True, power_demand=4, produces="AIR", label="AIR"),
+    "PORT": dict(defense=0.8, capturable=True, power_demand=4, produces="SEA", label="PRT"),
+    "FOB": dict(defense=0.6, capturable=True, power_demand=2, produces=None, label="FOB"),
+}
 
 
 @dataclass(frozen=True)
