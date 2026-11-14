@@ -63,6 +63,7 @@ class Plan:
     enemy_air_cover: Set[Coord]     # hexes under hostile surface-to-air fire
     own_air_cover: Set[Coord]       # hexes our own air defence protects
     claimed: Set[Coord] = field(default_factory=set)  # capitals already given to an infantry unit this turn
+    ghosts: List = field(default_factory=list)  # lost contacts: used for threat checks, never targeted
 
 
 @register
@@ -71,6 +72,7 @@ class DoctrineAgent(Agent):
 
     def __init__(self, aggression: float = 1.0) -> None:
         self._approach_cache = {}
+        self._seen_enemy = False
         self.builder = FixedBuilder()
         # <1 makes the agent more cautious, >1 more willing to attack at
         # unfavourable odds. Handy knob for building an opponent pool later.
@@ -80,6 +82,7 @@ class DoctrineAgent(Agent):
         super().reset(side, world)
         self.builder = FixedBuilder()
         self._approach_cache = {}
+        self._seen_enemy = False
 
     # -- main ------------------------------------------------------------
 
@@ -94,7 +97,12 @@ class DoctrineAgent(Agent):
             main_effort=self._select_main_effort(obs, side),
             enemy_air_cover=self._air_defence_coverage(obs, side.other),
             own_air_cover=self._air_defence_coverage(obs, side),
+            ghosts=list(obs.ghosts),
         )
+        if enemies or plan.ghosts:
+            self._seen_enemy = True
+        # Hunt structures only once we have met the enemy and lost all contact.
+        cleanup = self._seen_enemy and not enemies and not plan.ghosts
         orders: Dict[int, Order] = {}
         for unit in mine:
             # Logistics outrank tactics. A unit that is cut off and nearly dry
@@ -112,7 +120,7 @@ class DoctrineAgent(Agent):
                 if eng is not None:
                     orders[unit.uid] = eng
                     continue
-            if not enemies:                 # nothing left to fight: take the structures
+            if cleanup:                     # nothing left in sight: take the structures
                 so = structure_order(obs, unit)
                 if so is not None:
                     orders[unit.uid] = so
@@ -136,7 +144,7 @@ class DoctrineAgent(Agent):
         st = unit.stats
         if not (st.can_capture and st.move >= 7 and st.domain is Domain.LAND):
             return None
-        land = [e for e in enemies if e.domain is Domain.LAND]
+        land = [e for e in list(enemies) + plan.ghosts if e.domain is Domain.LAND]
         if any(distance(e.coord, unit.coord) <= EXPANSION_SAFE_RADIUS for e in land):
             return None
         if unit.coord in obs.objectives:
@@ -247,7 +255,10 @@ class DoctrineAgent(Agent):
         decision is filtered through it.
         """
         covered: Set[Coord] = set()
-        for u in obs.units_of(side):
+        known = list(obs.units_of(side))
+        if side != obs.side:
+            known += list(obs.ghosts)         # a SAM we lost sight of is still probably there
+        for u in known:
             st = u.stats
             if Domain.AIR not in st.targets:
                 continue
@@ -572,7 +583,7 @@ class DoctrineAgent(Agent):
                 if self._should_assault(obs, unit, target, enemies):
                     return Attack(unit.uid, target.uid)
             threatened = any(e.stats.can_capture and distance(e.coord, unit.coord) <= THREAT_RADIUS
-                             for e in enemies)
+                             for e in list(enemies) + plan.ghosts)
             if obs.objective_holder(unit.coord) != side or threatened:
                 return Hold(unit.uid)
 

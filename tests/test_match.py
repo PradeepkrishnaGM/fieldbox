@@ -64,7 +64,7 @@ class TestReplay(unittest.TestCase):
             path = rep.save(os.path.join(tmp, "a.fbr"))
             with gzip.open(path, "rt") as fh:
                 d = json.load(fh)
-        self.assertEqual(d["version"], 1)
+        self.assertEqual(d["version"], 2)
 
     def test_unknown_version_and_bad_files_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -127,7 +127,7 @@ class HexMap:
 
     __slots__ = (
         "width", "height", "terrain", "roads", "rivers",
-        "_adj", "_cost", "_def", "_path_cache", "_final",
+        "_adj", "_cost", "_def", "_path_cache", "_final", "symmetric",
     )
 
     def __init__(self, width: int, height: int) -> None:
@@ -141,6 +141,11 @@ class HexMap:
         self._def: Dict[Coord, float] = {}
         self._path_cache: Dict[tuple, Optional[List[Coord]]] = {}
         self._final = False
+        # True once the map is known to be point-symmetric (set by the world
+        # generator). Paths are then computed in a canonical orientation, so a
+        # route and its mirror image are always mirror images: equal ties are
+        # not broken in favour of one side.
+        self.symmetric = False
         for r in range(height):
             offset = r // 2
             for col in range(width):
@@ -247,6 +252,25 @@ class HexMap:
     # -- pathfinding ------------------------------------------------------
 
     def find_path(
+        self,
+        start: Coord,
+        goal: Coord,
+        blocked: Optional[frozenset] = None,
+        domain: Domain = Domain.LAND,
+    ) -> Optional[List[Coord]]:
+        """A* over movement cost. Returns the hexes AFTER `start`, or None.
+        On a symmetric map the query and its 180-degree mirror are answered
+        from one canonical search, so the two sides get mirrored routes."""
+        if self.symmetric:
+            w, h = self.width, self.height
+            ms, mg = mirror_coord(start, w, h), mirror_coord(goal, w, h)
+            if (ms, mg) < (start, goal):
+                mb = frozenset(mirror_coord(c, w, h) for c in blocked) if blocked else blocked
+                path = self._find_path(ms, mg, mb, domain)
+                return None if path is None else [mirror_coord(c, w, h) for c in path]
+        return self._find_path(start, goal, blocked, domain)
+
+    def _find_path(
         self,
         start: Coord,
         goal: Coord,

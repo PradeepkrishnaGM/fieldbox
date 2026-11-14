@@ -143,12 +143,21 @@ class RushAgent(Agent):
             if struct is not None and (nearest is None or
                                        distance(u.coord, struct.coord) < distance(u.coord, nearest.coord)):
                 orders[u.uid] = structure_order(obs, u) or (
-                    simple_engage(obs, u, nearest) if nearest else Hold(u.uid))
+                    simple_engage(obs, u, nearest) if nearest else self._search(obs, u))
             elif nearest is not None:
                 orders[u.uid] = simple_engage(obs, u, nearest)
             else:
-                orders[u.uid] = Hold(u.uid)
+                orders[u.uid] = self._search(obs, u)
         return [orders[k] for k in sorted(orders)] + self.builder.builds(obs)
+
+    @staticmethod
+    def _search(obs: Observation, u: Unit) -> Order:
+        """Nothing visible or worth a structure strike: head for the nearest lost contact."""
+        ghosts = [g for g in obs.ghosts if u.can_engage(g) and obs.map.passable(g.coord, u.domain)]
+        if not ghosts:
+            return Hold(u.uid)
+        g = min(ghosts, key=lambda g: (distance(u.coord, g.coord), g.uid))
+        return MoveTo(u.uid, g.coord)
 
 
 def _nearest_objective(obs: Observation, unit: Unit) -> Optional[tuple]:

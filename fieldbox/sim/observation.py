@@ -1,9 +1,11 @@
 """Observation: the only thing agents may read (PLAN.md §4.1).
 
 A fresh snapshot per side per turn. It holds frozen unit views, never live
-`Unit` objects and never the `Game`. Enemy information is available only
-through `enemy_units`, so fog of war (M6) needs to filter exactly one list.
-The static world (map, provinces) is shared read-only.
+`Unit` objects and never the `Game`. Enemy information is filtered by fog of
+war (PLAN.md §3.8): `enemy_units` holds only units inside the side's
+visibility, `ghosts` the recently lost contacts, and `enemy_structures` the
+structures seen so far (`age` 0 = visible now, larger = last seen that many
+turns ago). The static world (map, provinces) is shared read-only.
 
 The query methods mirror the old `Game` API (`units_of`, `unit_at`,
 `enemies_adjacent`, `objectives`, ...) so agent code reads naturally.
@@ -37,6 +39,24 @@ class UnitView(UnitLike):
 
 
 @dataclass(frozen=True)
+class GhostView(UnitLike):
+    """A lost contact: last known type, position and strength, `age` turns old.
+    Behaves like a unit for distance and domain queries; it cannot be ordered
+    against."""
+    uid: int
+    side: Side
+    utype: UnitType
+    q: int
+    r: int
+    strength: float
+    age: int
+    entrench: int = 0
+    supply: float = 100.0
+    in_supply: bool = True
+    order: Optional[Order] = None
+
+
+@dataclass(frozen=True)
 class StructureView(StructureLike):
     sid: int
     kind: StructureType
@@ -44,6 +64,7 @@ class StructureView(StructureLike):
     q: int
     r: int
     strength: float
+    age: int = 0                 # turns since last seen (enemy structures); 0 = visible now
 
 
 class Observation:
@@ -55,20 +76,26 @@ class Observation:
                  enemy_structures: Tuple[StructureView, ...] = (),
                  pp: float = 0.0, cp: int = 0, power: float = 1.0,
                  queues: Optional[Dict[int, Tuple[Tuple[UnitType, int], ...]]] = None,
-                 building: frozenset = frozenset()) -> None:
+                 building: frozenset = frozenset(),
+                 ghosts: Tuple[GhostView, ...] = (),
+                 visible_land: frozenset = frozenset(),
+                 visible_air: frozenset = frozenset()) -> None:
         self.side = side
         self.turn = turn
         self.max_turns = max_turns
         self.world = world                      # static, shared read-only
         self.map: HexMap = world.hexmap
         self.own_units = own_units
-        self.enemy_units = enemy_units
+        self.enemy_units = enemy_units               # visible now, exact
+        self.ghosts = ghosts                         # lost contacts, not exact
+        self.visible_land = visible_land             # hexes where land units are seen
+        self.visible_air = visible_air               # hexes where air and sea units are seen
         self.owner = owner
         self.vp = vp
         self.supply_net = {side: supply_net}    # own side only
         self.hq = hq
         self.own_structures = own_structures
-        self.enemy_structures = enemy_structures      # M6 will filter exactly this list
+        self.enemy_structures = enemy_structures      # seen so far (see `age`)
         self.pp = pp                                  # own production points
         self.cp = cp                                  # own command points this turn
         self.power = power                            # own power factor
@@ -92,12 +119,19 @@ class Observation:
             return UnitView(u.uid, u.side, u.utype, u.q, u.r, u.strength, u.entrench,
                             u.supply, u.in_supply, game.standing.get(u.uid) if own else None)
         own = tuple(view(u, True) for u in game.units_of(side))
-        enemy = tuple(view(u, False) for u in game.units_of(side.other))
+        vis = game.vis[side]
+        enemy = tuple(view(u, False) for u in game.units_of(side.other)
+                      if vis.sees(u.domain, u.coord))
+        mem = game.fog[side]
+        ghosts = tuple(GhostView(g.uid, Side(g.side), g.utype, g.q, g.r, g.strength,
+                                 game.turn - g.seen) for g in mem.ghosts(game.turn))
         nets = {d: frozenset(n) for d, n in game.supply_net.get(side, {}).items()}
         def sview(st) -> StructureView:
             return StructureView(st.sid, st.kind, st.side, st.q, st.r, st.strength)
         own_s = tuple(sview(st) for st in sorted(game.structures_of(side), key=lambda x: x.sid))
-        enemy_s = tuple(sview(st) for st in sorted(game.structures_of(side.other), key=lambda x: x.sid))
+        enemy_s = tuple(StructureView(r.sid, r.kind, Side(r.side), r.q, r.r, r.strength,
+                                      game.turn - r.seen)
+                        for _, r in sorted(mem.structures.items()))
         queues = {st.sid: tuple((i.utype, i.left) for i in game.queues.get(st.sid, ()))
                   for st in game.structures_of(side)}
         building = frozenset(v[0] for uid, v in game.constructions.items()
@@ -105,7 +139,7 @@ class Observation:
         return cls(side, game.turn, game.max_turns, game.world, own, enemy,
                    dict(game.owner), dict(game.vp), nets, dict(game.hq),
                    own_s, enemy_s, game.pp[side], game.cp(side), game.power[side],
-                   queues, building)
+                   queues, building, ghosts, vis.land, vis.air)
 
     # -- queries mirroring the Game API -----------------------------------
 

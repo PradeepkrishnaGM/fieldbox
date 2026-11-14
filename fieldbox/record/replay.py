@@ -8,7 +8,8 @@ since generation is deterministic.
 File format `.fbr`: gzip JSON, top-level `version`. Snapshot k is the state
 after k turns (0 = deployment); `events[k]` are the events that produced it.
 Unit rows: [uid, side, type, q, r, strength, supply, in_supply, entrench,
-order]; structure rows: [sid, kind, side, q, r, strength].
+order]; structure rows: [sid, kind, side, q, r, strength]. `vis`, `ghosts` and
+`known` hold each side's fog-of-war view (absent in version 1 files).
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from typing import Dict, List, Optional
 
 from ..sim.units import Side
 
-VERSION = 1
+VERSION = 2          # 2 adds per-side visibility, ghosts and known structures (fog of war)
+READABLE = (1, 2)
 
 
 class ReplayError(Exception):
@@ -51,6 +53,7 @@ def _order_text(o) -> str:
 def snapshot(game) -> dict:
     """Plain-data state of a Game (units, structures, owners, economy)."""
     sides = (Side.BLUE, Side.RED)
+    t = game.turn
     return {
         "turn": game.turn,
         "units": [[u.uid, int(u.side), u.utype.name, u.q, u.r, round(u.strength, 2),
@@ -68,6 +71,13 @@ def snapshot(game) -> dict:
         "income": [round(game.income(s), 1) for s in sides],
         "cp": [game.cp(s) for s in sides],
         "power": [round(game.power[s], 3) for s in sides],
+        # Fog of war, per side: [land-visible hexes, air/sea-visible hexes].
+        "vis": [[sorted(map(list, game.vis[s].land)), sorted(map(list, game.vis[s].air))]
+                for s in sides],
+        "ghosts": [[[g.uid, g.utype.name, g.q, g.r, round(g.strength, 1), t - g.seen]
+                    for g in game.fog[s].ghosts(t)] for s in sides],
+        "known": [[[r.sid, r.kind.name, r.side, r.q, r.r, round(r.strength, 1), t - r.seen]
+                   for _, r in sorted(game.fog[s].structures.items())] for s in sides],
     }
 
 
@@ -104,8 +114,9 @@ class Replay:
                 d = json.load(fh)
         except (OSError, ValueError) as exc:
             raise ReplayError(f"cannot read replay {path}: {exc}") from exc
-        if d.get("version") != VERSION:
-            raise ReplayError(f"unsupported replay version {d.get('version')!r} (expected {VERSION})")
+        if d.get("version") not in READABLE:
+            raise ReplayError(f"unsupported replay version {d.get('version')!r} "
+                              f"(readable: {READABLE})")
         return cls(d["meta"], d["snapshots"], d["events"])
 
     def world(self):

@@ -310,6 +310,17 @@ class EconomyParams:
 
 ECONOMY = EconomyParams()
 
+
+@dataclass(frozen=True)
+class FogParams:
+    structure_spot: int = 2             # every structure sees this many hexes around it
+    radar_range_air_sea: int = 10       # radar range against air and sea units (x strength x power; halved with no data center)
+    radar_range_ground: int = 4         # radar range against land units and structures (same scaling)
+    ghost_ttl: int = 5                  # turns a lost contact stays on the map as a ghost
+
+
+FOG = FogParams()
+
 # Structure table (PLAN.md §3.3): defence, capturable, power demand, what it
 # builds. `produces` is the domain of units it can build, or None.
 STRUCTURE_STATS: Dict[str, dict] = {

@@ -11,12 +11,14 @@ traits (aggression, force mix, what to protect, what to target). A population
 of doctrines evolves through league play, and commanders counter-build
 against what they observe within a match.
 
-**Status: M5** — a match viewer: watch a game live in the window (agents
-step turn by turn, units glide along their paths, engagements flash) or open
-a saved replay, with a selection card, event log, timeline scrubber and an end
-overlay. Underneath is the M4 engine: structures, power, production,
-command points, FOBs, structure-based supply and HQ victory, on generated
-point-symmetric worlds. Fog of war and evolution are next.
+**Status: M6** — fog of war. Each commander sees only what its sensors
+see (unit and structure discs, radar scaled by strength and power, halved
+without a data center); lost contacts linger as ghosts for a few turns and
+seen structures stay on the map until seen destroyed. The match viewer shows
+God view, BLUE's view or RED's view, with radar range rings. Underneath are
+the M5 viewer and the M4 engine (structures, power, production, command points,
+supply sources, HQ victory) on generated point-symmetric worlds. The doctrine
+genome and commander are next.
 
 ## Quick start
 
@@ -40,6 +42,7 @@ python -m fieldbox gui --screen symbols                  # unit and structure sy
 python -m fieldbox gui --screen match --blue doctrine --red rush --seed 1 --preset standard   # watch live
 python -m fieldbox gui --screen match --replay runs/replays/a.fbr                              # watch a replay
 python -m fieldbox.ui.shot --screen mapview --seed 2 --out shots/m.png   # headless screenshot
+python -m fieldbox.ui.shot --screen match --turns 12 --view blue --rings --out shots/b.png
 ```
 
 Map viewer keys: `N`/`B` next/previous seed, `Space` random seed, `1 2 3`
@@ -48,8 +51,9 @@ right-drag to pan, wheel to zoom, `Home` to fit, `Esc` to quit.
 
 Match viewer keys: `Space` play/pause, `Left`/`Right` step, `Home`/`End` first/last
 turn, `+`/`-` speed, click a unit or structure to inspect it, drag the timeline to
-scrub, mouse wheel over the right panel scrolls the log, `F` fit, `G` grid,
-`P` province tint, `O` or `Enter` toggles the end overlay.
+scrub, mouse wheel over the right panel scrolls the log, `F` cycles God / BLUE / RED
+view (fog of war), `R` radar range rings, `Z` fit, `G` grid, `P` province tint,
+`O` or `Enter` toggles the end overlay.
 
 Tests (the UI tests are skipped when pygame-ce is not installed):
 

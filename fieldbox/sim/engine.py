@@ -32,6 +32,7 @@ from .events import Event
 from .. import params as P
 from .orders import (ORDER_TYPES, Attack, Bombard, Build, Construct, Hold, MoveTo,
                      Order, Repair, Strike)
+from .fog import FogMemory, Visibility, compute_visibility, initial_memory
 from .structures import STATS as SSTATS
 from .structures import STRUCTURE_VP, Structure, StructureType as ST
 from .supply import (AIR_REARM_RADIUS, DRAIN_RATE, FOB_BUDGET, HQ_BUDGET, PORT_BUDGET,
@@ -110,6 +111,9 @@ class Game:
             self.power[s] = self._power_factor(s)
         for s in (Side.BLUE, Side.RED):
             self._update_supply(s, emit=False)
+        self.vis: Dict[Side, Visibility] = {}
+        self.fog: Dict[Side, FogMemory] = {s: initial_memory(self, s) for s in Side}
+        self._update_fog()
 
     # -- queries ----------------------------------------------------------
 
@@ -149,6 +153,18 @@ class Game:
         return out
 
     # -- structures, power, command ---------------------------------------
+
+    # -- fog of war ---------------------------------------------------------
+
+    def _update_fog(self) -> None:
+        """Recompute what each side sees and remembers (end of turn)."""
+        for side in Side:
+            self.vis[side] = compute_visibility(self, side)
+            self.fog[side].update(self, side, self.vis[side])
+
+    def can_see(self, side: Side, unit) -> bool:
+        """Is this enemy unit inside `side`'s visibility right now?"""
+        return self.vis[side].sees(unit.domain, unit.coord)
 
     def structures_of(self, side: Side, kind: Optional[ST] = None) -> List[Structure]:
         return [s for s in self.structures.values()
@@ -220,6 +236,7 @@ class Game:
         self._phase_score()
         self._emit(E.TURN_END)
         self.turn += 1
+        self._update_fog()
         return self.events[start:]
 
     def _emit(self, kind: str, side: Optional[Side] = None, **data) -> None:
@@ -238,7 +255,7 @@ class Game:
                 return "destination impassable"
         elif isinstance(o, Attack) and o.structure:
             s = self.structures.get(o.target)
-            if s is None or s.side is side:
+            if s is None or s.side is side or o.target not in self.fog[side].structures:
                 return "no such enemy structure"
             if u.stats.indirect or u.domain is Domain.AIR or Domain.LAND not in u.stats.targets:
                 return "cannot assault a structure"
@@ -246,8 +263,8 @@ class Game:
                 return "structure is defended"
         elif isinstance(o, Attack):
             t = self.units.get(o.target)
-            if t is None or t.side == side:
-                return "no such enemy"
+            if t is None or t.side == side or not self.can_see(side, t):
+                return "no such enemy"             # unseen enemies cannot be targeted
             if not u.can_engage(t):
                 return "cannot engage that domain"
         elif isinstance(o, Bombard):
@@ -257,7 +274,7 @@ class Game:
                 return "off the map"
         elif isinstance(o, Strike):
             s = self.structures.get(o.sid)
-            if s is None or s.side is side:
+            if s is None or s.side is side or o.sid not in self.fog[side].structures:
                 return "no such enemy structure"
             if u.domain is not Domain.AIR or Domain.LAND not in u.stats.targets:
                 return "not a strike aircraft"
@@ -304,8 +321,19 @@ class Game:
         q.append(QueueItem(o.utype, ust.build_turns))
         self._emit(E.BUILD_QUEUED, side, sid=s.sid, utype=o.utype.name)
 
+    def _lose_sight(self) -> None:
+        """A standing Attack ends when its target is no longer visible."""
+        for uid, o in list(self.standing.items()):
+            u = self.units.get(uid)
+            if u is None or not isinstance(o, Attack) or o.structure:
+                continue
+            t = self.units.get(o.target)
+            if t is not None and not self.can_see(u.side, t):
+                del self.standing[uid]
+
     def _phase_orders(self, orders: Dict[Side, List[Order]]) -> None:
         self._attacked = set()
+        self._lose_sight()
         for side in (Side.BLUE, Side.RED):
             seen = set()
             cp, used, dropped = self.cp(side), 0, 0
@@ -780,8 +808,9 @@ class Game:
         self._by_coord.setdefault(coord, {})[unit.domain] = unit
 
     def place(self, unit: Unit, coord: Coord) -> None:
-        """Move a unit and keep the position index in sync (tests, tools)."""
+        """Move a unit and keep the position index and fog in sync (tests, tools)."""
         self._set_pos(unit, coord)
+        self._update_fog()
 
     def _kill(self, unit: Unit, cause: str) -> None:
         unit.strength = 0.0

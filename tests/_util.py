@@ -32,6 +32,7 @@ def make_game(units, world_seed=1, preset="tiny", seed=0, max_turns=None):
         game._by_coord.setdefault(u.coord, {})[u.domain] = u
     for s in game.supply_net:
         game._update_supply(s, emit=False)
+    game._update_fog()
     return game
 
 

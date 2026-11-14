@@ -24,7 +24,7 @@ from .app import App, make_screen  # noqa: E402
 
 def render_screen(name: str, out: str, seed: int = 1, preset: str = "standard",
                   size=UIParams().window, turns: int = 0, anim=None, select=None,
-                  **opts) -> str:
+                  view=None, rings: bool = False, **opts) -> str:
     """Render one frame of a screen to a PNG; returns the path. For the match
     screen, `turns` advances the game first (clamped to its length), `anim`
     freezes mid-animation (0..1) and `select` is ("unit"|"structure", id)."""
@@ -36,6 +36,8 @@ def render_screen(name: str, out: str, seed: int = 1, preset: str = "standard",
             screen.update(0.0)                  # lay out the buttons
             screen.advance_to(turns, anim)
             screen.select = select
+            screen.view = view if screen.has_fog else None
+            screen.rings = rings
         app.draw_frame()
         Path(out).parent.mkdir(parents=True, exist_ok=True)
         pygame.image.save(app.window, out)
@@ -56,9 +58,12 @@ def main(argv=None) -> None:
     p.add_argument("--red", default="rush")
     p.add_argument("--game-seed", type=int, default=0)
     p.add_argument("--replay", default=None, help="match: render a saved replay")
+    p.add_argument("--view", default="god", choices=["god", "blue", "red"], help="match: fog view")
+    p.add_argument("--rings", action="store_true", help="match: show radar range rings")
     a = p.parse_args(argv)
     print(render_screen(a.screen, a.out, a.seed, a.preset, turns=a.turns, anim=a.anim,
-                        blue=a.blue, red=a.red, game_seed=a.game_seed, replay=a.replay))
+                        blue=a.blue, red=a.red, game_seed=a.game_seed, replay=a.replay,
+                        view={"god": None, "blue": 0, "red": 1}[a.view], rings=a.rings))
 
 
 if __name__ == "__main__":

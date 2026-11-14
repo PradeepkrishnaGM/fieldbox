@@ -343,10 +343,10 @@ class TestGolden(unittest.TestCase):
     must be deliberate and re-pinned with a reason in DECISIONS.md."""
 
     GOLDEN = [
-        'c2c62dff3301f7efc03b96470237a5878f9234c5eb870d26f91cb11ce57dd22e',
-        '47315876632f16385386d90f62451b15a6f4623287ad94b0f78640e09e7412ea',
-        'cad6ec94e9d82e484d52c37bdf1d94f35cb155f515f287a2f2a8a3758744a7be',
-        '3a1ced604e7b642b50abcee4f120d3e0b26303c2e64a5cb94dc86f61a92fe787',
+        '0c18c8d69fe60f7dbc8a46426e3d20ecd0d7765a92016ab412a282ed15d263fa',
+        '5cfad1a3a64a67afd6b231bcb783cddd1caceb79d0ddfe106ca90f51dba6edd4',
+        '503d3a8497002cce4fd140ea8423ddbbdda2e740ed588c17ae31c21b1c52b7e0',
+        '82f8e0718ff030ea589edab4c80608fae80fff21713322821b1aa91beaca4df7',
     ]
 
     def _hashes(self):

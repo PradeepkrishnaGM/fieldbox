@@ -16,11 +16,12 @@ import pygame
 from ...core.hexgrid import distance
 from ...params import UIParams
 from ...record.replay import LiveMatch, Replay
+from ...sim.fog import FOG, radar_range
 from ...sim.units import STATS, Side, UnitType
 from ...world import generate_world
 from .. import theme
 from ..app import Screen
-from ..camera import Camera
+from ..camera import SQ3, Camera
 from ..hexdraw import MapRenderer, hex_corners
 from ..symbols import draw_counter, draw_structure
 from ..widgets import Button, Label, Panel
@@ -77,6 +78,9 @@ class MatchScreen(Screen):
         self.playing = live is not None
         self.speed = 1
         self.tint, self.grid = True, False
+        self.view: Optional[int] = None      # None = God view, 0/1 = what BLUE/RED sees (fog)
+        self.rings = False                   # radar range rings
+        self._vis_cache: Dict[tuple, tuple] = {}
         self.select: Optional[Tuple[str, int]] = None   # ("unit"|"structure", id)
         self.hover: Optional[Tuple[int, int]] = None
         self.filter = "all"
@@ -86,6 +90,7 @@ class MatchScreen(Screen):
         self._scrub = False
         self._names: Dict[int, Tuple[str, int]] = {}       # uid -> (type, side)
         self._snames: Dict[int, str] = {}                   # sid -> structure kind
+        self._sside: Dict[int, int] = {}                    # sid -> original owner
         self._indexed = 0
         self._unit_cache: Dict[int, Dict[int, list]] = {}
         self._move_cache: Dict[int, Dict[int, List[Tuple[int, int]]]] = {}
@@ -102,6 +107,7 @@ class MatchScreen(Screen):
                 self._names.setdefault(row[0], (row[2], row[1]))
             for row in sn["structures"]:
                 self._snames.setdefault(row[0], row[1])
+                self._sside.setdefault(row[0], row[2])
         self._indexed = len(self.rep.snapshots)
 
     def units(self, k: int) -> Dict[int, list]:
@@ -179,6 +185,37 @@ class MatchScreen(Screen):
 
     # -- control ------------------------------------------------------------
 
+    @property
+    def has_fog(self) -> bool:
+        return "vis" in self.rep.snapshots[0]       # version 1 replays have none
+
+    def cycle_view(self) -> None:
+        """God view -> BLUE's view -> RED's view -> God view."""
+        if not self.has_fog:
+            return
+        self.view = {None: 0, 0: 1, 1: None}[self.view]
+        self.select = None
+
+    def visible_sets(self):
+        """(land, air/sea) visible hex sets for the current view and turn."""
+        key = (self.idx, self.view)
+        got = self._vis_cache.get(key)
+        if got is None:
+            land, air = self.snap["vis"][self.view]
+            got = (set(map(tuple, land)), set(map(tuple, air)))
+            if len(self._vis_cache) > 64:
+                self._vis_cache.clear()
+            self._vis_cache[key] = got
+        return got
+
+    def unit_visible(self, row) -> bool:
+        """Would the current view see this unit row? (always, in God view)"""
+        if self.view is None or row[1] == self.view:
+            return True
+        land, air = self.visible_sets()
+        dom = STATS[UnitType[row[2]]].domain.name
+        return (row[3], row[4]) in (land if dom == "LAND" else air)
+
     def toggle_play(self) -> None:
         self.playing = not self.playing
 
@@ -246,8 +283,12 @@ class MatchScreen(Screen):
                 self.set_speed(self.speed + 1)
             elif k in (pygame.K_MINUS, pygame.K_KP_MINUS):
                 self.set_speed(self.speed - 1)
-            elif k == pygame.K_f:
+            elif k == pygame.K_z:
                 self.fit()
+            elif k == pygame.K_f:
+                self.cycle_view()
+            elif k == pygame.K_r:
+                self.rings = not self.rings
             elif k == pygame.K_g:
                 self.grid = not self.grid
             elif k == pygame.K_p:
@@ -307,13 +348,15 @@ class MatchScreen(Screen):
         sz = UI.hex_size * self.camera.zoom
         best, best_d = None, (0.7 * sz) ** 2
         for row in self.snap["units"]:
+            if not self.unit_visible(row):
+                continue
             x, y = self._unit_screen(row)
             d = (x - pos[0]) ** 2 + (y - pos[1]) ** 2
             if d < best_d:
                 best, best_d = ("unit", row[0]), d
         if best:
             return best
-        for row in self.snap["structures"]:
+        for row in self._structure_rows():
             x, y = self.camera.hex_to_screen((row[3], row[4]))
             if (x - pos[0]) ** 2 + (y - pos[1]) ** 2 < (0.7 * sz) ** 2:
                 return ("structure", row[0])
@@ -373,6 +416,51 @@ class MatchScreen(Screen):
         d = STATS[UnitType[utype]].domain.name
         return {"AIR": (0.28 * sz, -0.28 * sz), "SEA": (-0.28 * sz, 0.28 * sz)}.get(d, (0.0, 0.0))
 
+    def _structure_rows(self) -> List[list]:
+        """Structure rows [sid, kind, side, q, r, strength, age] the current
+        view knows about: all of them in God view; else own structures plus the
+        enemy structures seen so far (age > 0 = last seen that long ago)."""
+        rows = [list(r) + [0] for r in self.snap["structures"]]
+        if self.view is None:
+            return rows
+        known = {r[0]: r for r in self.snap["known"][self.view]}
+        out = [r for r in rows if r[2] == self.view]
+        out += [list(r[:6]) + [r[6]] for r in known.values()]
+        return out
+
+    def _draw_fog(self, surf: pygame.Surface, view_rect: pygame.Rect) -> None:
+        """Darken what the current view cannot see; radar-only hexes less."""
+        land, air = self.visible_sets()
+        cam = self.camera
+        sz = UI.hex_size * cam.zoom
+        shade = pygame.Surface(view_rect.size, pygame.SRCALPHA)
+        ox, oy = view_rect.topleft
+        for c in self.renderer.coords:
+            if c in land:
+                continue
+            x, y = cam.hex_to_screen(c)
+            if not view_rect.inflate(80, 80).collidepoint(x, y):
+                continue
+            alpha = 70 if c in air else 150
+            pygame.draw.polygon(shade, (8, 10, 14, alpha),
+                                [(px - ox, py - oy) for px, py in hex_corners(x, y, sz + 0.5)])
+        surf.blit(shade, view_rect.topleft)
+
+    def _draw_rings(self, surf: pygame.Surface) -> None:
+        cam, sn = self.camera, self.snap
+        sz = UI.hex_size * cam.zoom
+        dc = {s: any(r[1] == "DATACENTER" and r[2] == s for r in sn["structures"]) for s in (0, 1)}
+        for r in sn["structures"]:
+            if r[1] != "RADAR" or (self.view is not None and r[2] != self.view):
+                continue
+            x, y = cam.hex_to_screen((r[3], r[4]))
+            for base, col in ((FOG.radar_range_ground, theme.SIDE_FILL[Side(r[2])]),
+                              (FOG.radar_range_air_sea, theme.SIDE_LIGHT[Side(r[2])])):
+                rng = radar_range(base, r[5], sn["power"][r[2]], dc[r[2]])
+                if rng > 0:
+                    pygame.draw.circle(surf, col, (round(x), round(y)),
+                                       round((rng + 0.5) * SQ3 * sz), 2)
+
     def _draw_world(self, surf: pygame.Surface) -> None:
         cam, view = self.camera, self.map_rect()
         owner = {i: (None if v < 0 else Side(v)) for i, v in enumerate(self.snap["owner"])}
@@ -387,23 +475,28 @@ class MatchScreen(Screen):
         margin = view.inflate(80, 80)
 
         # structures (those destroyed this turn linger until the burst)
-        rows = list(self.snap["structures"])
-        if show_prev and t < 0.8:
+        rows = self._structure_rows()
+        if show_prev and t < 0.8 and self.view is None:
             alive = {r[0] for r in rows}
-            rows += [r for r in self.rep.snapshots[self.idx - 1]["structures"] if r[0] not in alive]
+            rows += [list(r) + [0] for r in self.rep.snapshots[self.idx - 1]["structures"]
+                     if r[0] not in alive]
         sel = self.select
         for r in rows:
             x, y = cam.hex_to_screen((r[3], r[4]))
             if margin.collidepoint(x, y):
                 draw_structure(surf, (x, y), sz, Side(r[2]), r[1], r[5], ring=r[5] < 99.5)
+                if r[6] > 0:                       # remembered, not currently seen
+                    surf.blit(theme.font(max(10, round(sz * 0.6))).render(f"?{r[6]}", True, theme.WARN),
+                              (x + sz * 0.5, y - sz * 0.9))
                 if sel == ("structure", r[0]):
                     pygame.draw.polygon(surf, theme.ACCENT, hex_corners(x, y, sz), 3)
 
         # units: sea, land, air so that aircraft draw on top
         order = {"SEA": 0, "LAND": 1, "AIR": 2}
-        draw_rows = [(r, r) for r in cur.values()]
+        draw_rows = [(r, r) for r in cur.values() if self.unit_visible(r)]
         if show_prev and t < 0.8:
-            draw_rows += [(None, r) for uid, r in prev.items() if uid not in cur]
+            draw_rows += [(None, r) for uid, r in prev.items()
+                          if uid not in cur and self.unit_visible(r)]
         draw_rows.sort(key=lambda p: (order[STATS[UnitType[(p[0] or p[1])[2]]].domain.name],
                                       (p[0] or p[1])[0]))
         pos: Dict[int, Tuple[float, float]] = {}
@@ -419,6 +512,16 @@ class MatchScreen(Screen):
             if sel == ("unit", uid):
                 pygame.draw.circle(surf, theme.ACCENT, (round(x), round(y)), round(0.75 * sz), 2)
 
+        if self.view is not None:
+            self._draw_fog(surf, view)
+            for g in self.snap["ghosts"][self.view]:        # lost contacts, translucent with their age
+                x, y = cam.hex_to_screen((g[2], g[3]))
+                ox, oy = self._domain_offset(g[1], sz)
+                if margin.collidepoint(x + ox, y + oy):
+                    draw_counter(surf, (x + ox, y + oy), sz, Side(1 - self.view), g[1], g[4],
+                                 ghost_age=g[5])
+        if self.rings:
+            self._draw_rings(surf)
         if self.hover is not None:
             hx, hy = cam.hex_to_screen(self.hover)
             pygame.draw.polygon(surf, theme.TEXT, hex_corners(hx, hy, sz), 1)
@@ -473,10 +576,17 @@ class MatchScreen(Screen):
         sn = self.snap
         total = self.rep.meta.get("max_turns", "?")
         Label(f"T {sn['turn']}/{total}", 17, theme.ACCENT, True).draw(surf, (12, 8))
+        if self.has_fog:
+            vtxt = "GOD VIEW" if self.view is None else f"{Side(self.view).name} VIEW"
+            vimg = theme.font(13, True).render(vtxt, True, theme.ACCENT)
+            surf.blit(vimg, ((w - vimg.get_width()) // 2, 11))
         for i, side in enumerate(SIDES):
             name = str(self.rep.meta.get("blue" if i == 0 else "red", side.name)).upper()
-            text = (f"{name}  PP {sn['pp'][i]:.0f} (+{sn['income'][i]:.0f})  CP {sn['cp'][i]}  "
-                    f"PWR {sn['power'][i] * 100:.0f}%  VP {sn['vp'][i]:.0f}")
+            if self.view is not None and self.view != i:     # the enemy's economy is hidden
+                text = f"{name}  PP ?  CP ?  PWR ?  VP {sn['vp'][i]:.0f}"
+            else:
+                text = (f"{name}  PP {sn['pp'][i]:.0f} (+{sn['income'][i]:.0f})  CP {sn['cp'][i]}  "
+                        f"PWR {sn['power'][i] * 100:.0f}%  VP {sn['vp'][i]:.0f}")
             img = theme.font(14, True).render(text, True, theme.SIDE_LIGHT[side])
             x = 110 if i == 0 else w - img.get_width() - 12
             surf.blit(img, (x, 10))
@@ -575,15 +685,16 @@ class MatchScreen(Screen):
                 (f"order: {row[9] or '-'}", theme.TEXT),
             ]
         if sel and sel[0] == "structure":
-            row = next((r for r in sn["structures"] if r[0] == sel[1]), None)
+            row = next((r for r in self._structure_rows() if r[0] == sel[1]), None)
             if row is None:
                 return [(f"structure S{sel[1]}: destroyed", theme.BAD)]
             side = Side(row[2])
             out = [(f"{row[1].title()} S{row[0]}  ({side.name})", theme.SIDE_LIGHT[side]),
                    (f"hex ({row[3]},{row[4]})", theme.TEXT),
-                   (f"strength {row[5]:.0f}", theme.TEXT)]
+                   (f"strength {row[5]:.0f}" + (f"  (last seen {row[6]} turns ago)" if row[6] else ""),
+                    theme.TEXT)]
             q = sn.get("queues", {}).get(str(row[0]))
-            if q:
+            if q and (self.view is None or row[2] == self.view):
                 out.append(("queue: " + ", ".join(f"{n[:3]} {left}" for n, left in q), theme.DIM))
             return out
         if self.hover is not None:
@@ -638,12 +749,26 @@ class MatchScreen(Screen):
             return f"GAME OVER: {d.get('winner') or 'draw'} ({d['cause']})"
         return None
 
+    def _event_known(self, ev: dict) -> bool:
+        """Would the viewed side know about this event? Its own, anything done
+        to it, and public ones (provinces, game over)."""
+        v, k, d = self.view, ev["k"], ev["d"]
+        if ev["s"] == v or k in ("province_flipped", "game_over"):
+            return True
+        if k == "engaged":
+            return self._names.get(d["defender"], ("", -1))[1] == v
+        if k == "structure_damaged":
+            return self._snames.get(d["sid"]) is not None and self._sside.get(d["sid"]) == v
+        return False
+
     def _log_lines(self) -> List[Tuple[str, tuple]]:
         out = []
         for k in range(1, self.idx + 1):
             for ev in self.rep.events[k]:
                 group = KIND_GROUP.get(ev["k"])
                 if group is None or (self.filter != "all" and group != self.filter):
+                    continue
+                if self.view is not None and not self._event_known(ev):
                     continue
                 text = self.describe(ev)
                 if text is None:

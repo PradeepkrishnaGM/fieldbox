@@ -318,6 +318,7 @@ def _attempt(seed: int, preset: str, params: P.Params) -> WorldMap:
     hexmap.rivers.update(rivers)
     hexmap.roads.update(roads)
     hexmap.finalize()
+    hexmap.symmetric = True        # generated maps are point-symmetric (validated below)
 
     provinces, province_of, regions, region_of = build_provinces(
         wp, terrain, rivers, cities)
