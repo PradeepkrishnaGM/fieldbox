@@ -95,6 +95,23 @@ def cmd_report(args) -> None:
         print(f"CSV written to {args.csv}/ (turns.csv, units.csv, combat.csv)")
 
 
+def cmd_worldgen(args) -> None:
+    from .world import generate_world
+    w = generate_world(args.seed, args.preset)
+    s = w.summary()
+    print(f"world seed={s['seed']} preset={s['preset']} size={s['size']}")
+    print(f"  land: {s['land_pct']:.1f}%")
+    print("  terrain: " + "  ".join(f"{k.lower()} {v}" for k, v in s["terrain"].items()))
+    print(f"  provinces: {s['provinces']}   regions: {s['regions']}   cities: {s['cities']}")
+    print(f"  river hexes: {s['river_hexes']}   road hexes: {s['road_hexes']}")
+    print(f"  retries: {s['retries']}")
+
+
+def cmd_gui(args) -> None:
+    from .ui.app import run_gui
+    run_gui(args.screen, seed=args.seed, preset=args.preset)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="fieldbox")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -138,6 +155,18 @@ def main(argv=None) -> None:
     rp.add_argument("--out", default=None, help="also write the report to a file")
     rp.add_argument("--csv", default=None, help="directory for the CSV tables")
     rp.set_defaults(func=cmd_report)
+
+    from .params import PRESETS as WORLD_PRESETS
+    wg = sub.add_parser("worldgen", help="generate a world and print its stats")
+    wg.add_argument("--seed", type=int, default=1)
+    wg.add_argument("--preset", default="standard", choices=sorted(WORLD_PRESETS))
+    wg.set_defaults(func=cmd_worldgen)
+
+    gu = sub.add_parser("gui", help="open a desktop window (needs pygame-ce)")
+    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols"])
+    gu.add_argument("--seed", type=int, default=1)
+    gu.add_argument("--preset", default="standard", choices=sorted(WORLD_PRESETS))
+    gu.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)
     args.func(args)

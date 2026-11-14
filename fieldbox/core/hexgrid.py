@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import heapq
 from enum import IntEnum
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .. import params as P
 
@@ -35,6 +35,7 @@ class Terrain(IntEnum):
     HILL = 2
     URBAN = 3
     WATER = 4
+    MOUNTAIN = 5          # added in M2; sorts after WATER to keep old values
 
 
 class Domain(IntEnum):
@@ -47,6 +48,7 @@ class Domain(IntEnum):
 # Tunables live in fieldbox.params (keyed by name); converted to enums here.
 IMPASSABLE = P.IMPASSABLE
 ROAD_COST = P.ROAD_COST
+RIVER_COST = P.RIVER_COST  # extra land cost to enter a river hex without a bridge
 AIR_COST = P.AIR_COST
 SEA_COST = P.SEA_COST
 
@@ -66,6 +68,7 @@ TERRAIN_CHAR: Dict[Terrain, str] = {
     Terrain.HILL: "^",
     Terrain.URBAN: "#",
     Terrain.WATER: "~",
+    Terrain.MOUNTAIN: "%",
 }
 
 _MISS = object()
@@ -92,6 +95,17 @@ def disc_offsets(radius: int) -> Tuple[Coord, ...]:
     return result
 
 
+def col_of(c: Coord) -> int:
+    """Offset column of an axial coordinate (the map is a W-column rectangle)."""
+    return c[0] + c[1] // 2
+
+
+def mirror_coord(c: Coord, width: int, height: int) -> Coord:
+    """180-degree rotation of the map onto itself (even width and height).
+    Maps neighbours to neighbours and sends column col -> width-1-col."""
+    return (width - height // 2 - c[0], height - 1 - c[1])
+
+
 def neighbors(q: int, r: int) -> Iterator[Coord]:
     for dq, dr in DIRECTIONS:
         yield q + dq, r + dr
@@ -112,7 +126,7 @@ class HexMap:
     """
 
     __slots__ = (
-        "width", "height", "terrain", "roads",
+        "width", "height", "terrain", "roads", "rivers",
         "_adj", "_cost", "_def", "_path_cache", "_final",
     )
 
@@ -121,6 +135,7 @@ class HexMap:
         self.height = height
         self.terrain: Dict[Coord, Terrain] = {}
         self.roads: set = set()
+        self.rivers: set = set()   # overlay flag on land hexes (not a terrain)
         self._adj: Dict[Domain, Dict[Coord, Tuple[Tuple[Coord, float], ...]]] = {}
         self._cost: Dict[Domain, Dict[Coord, float]] = {}
         self._def: Dict[Coord, float] = {}
@@ -138,6 +153,7 @@ class HexMap:
         """Freeze terrain and precompute lookup tables, one set per domain.
         Must be called after any direct mutation of `terrain` or `roads`."""
         roads = self.roads
+        rivers = self.rivers
         self._cost = {}
         self._adj = {}
         for domain in Domain:
@@ -146,8 +162,12 @@ class HexMap:
             for coord, terr in self.terrain.items():
                 base = table[terr]
                 # Roads only help ground movement.
-                if domain is Domain.LAND and base < IMPASSABLE and coord in roads:
-                    base = ROAD_COST
+                # A road on a river hex is a bridge: no river penalty.
+                if domain is Domain.LAND and base < IMPASSABLE:
+                    if coord in roads:
+                        base = ROAD_COST
+                    elif coord in rivers:
+                        base += RIVER_COST
                 cost[coord] = base
             adj: Dict[Coord, Tuple[Tuple[Coord, float], ...]] = {}
             for coord in self.terrain:
@@ -174,6 +194,10 @@ class HexMap:
 
     def add_road(self, coord: Coord) -> None:
         self.roads.add(coord)
+        self._final = False
+
+    def add_river(self, coord: Coord) -> None:
+        self.rivers.add(coord)
         self._final = False
 
     def _ensure(self) -> None:
@@ -300,3 +324,25 @@ class HexMap:
 
     def clear_cache(self) -> None:
         self._path_cache.clear()
+
+
+def connected_components(coords: Iterable[Coord]) -> List[List[Coord]]:
+    """6-neighbour connected components. Deterministic: components are found
+    in sorted order, so equal inputs always give equal outputs."""
+    remaining = set(coords)
+    out: List[List[Coord]] = []
+    for start in sorted(remaining):
+        if start not in remaining:
+            continue
+        comp = [start]
+        remaining.discard(start)
+        stack = [start]
+        while stack:
+            cur = stack.pop()
+            for n in neighbors(*cur):
+                if n in remaining:
+                    remaining.discard(n)
+                    comp.append(n)
+                    stack.append(n)
+        out.append(comp)
+    return out

@@ -32,6 +32,8 @@ class CombatParams:
     no_return_fire_mult: float = 0.60   # defender that cannot engage the attacker's domain
     indirect_coef: float = 0.55         # area fire: attrition, not decision
     direct_ad_coef: float = 1.00        # aimed missile engagement (SAM)
+    river_attack_mult: float = 0.8      # land attacks INTO a river hex (wired in at M3)
+    mountain_vehicle_attack_mult: float = 0.5  # tanks/IFVs attacking into mountains
 
 
 COMBAT = CombatParams()
@@ -66,17 +68,18 @@ SUPPLY = SupplyParams()
 
 IMPASSABLE = 999.0      # movement-cost sentinel: cannot enter
 ROAD_COST = 0.5         # land cost to enter a road hex, any terrain
+RIVER_COST = 1.0        # extra land cost to enter a river hex (no road/bridge)
 AIR_COST = 1.0          # air ignores terrain entirely
 SEA_COST = 1.0          # ships pay this on water
 
 # Movement point cost to ENTER a hex, per domain.
 MOVE_COST: Dict[str, Dict[str, float]] = {
     "LAND": {"PLAIN": 1.0, "FOREST": 2.0, "HILL": 2.0, "URBAN": 2.0,
-             "WATER": IMPASSABLE},
+             "WATER": IMPASSABLE, "MOUNTAIN": 3.0},
     "AIR": {"PLAIN": AIR_COST, "FOREST": AIR_COST, "HILL": AIR_COST,
-            "URBAN": AIR_COST, "WATER": AIR_COST},
+            "URBAN": AIR_COST, "WATER": AIR_COST, "MOUNTAIN": AIR_COST},
     "SEA": {"PLAIN": IMPASSABLE, "FOREST": IMPASSABLE, "HILL": IMPASSABLE,
-            "URBAN": IMPASSABLE, "WATER": SEA_COST},
+            "URBAN": IMPASSABLE, "WATER": SEA_COST, "MOUNTAIN": IMPASSABLE},
 }
 
 # Multiplier on a land defender's combat power in this terrain.
@@ -86,6 +89,7 @@ DEF_MULT: Dict[str, float] = {
     "HILL": 1.4,        # elevation and observation
     "URBAN": 1.8,       # buildings are fortresses
     "WATER": 1.0,       # nothing to hide behind
+    "MOUNTAIN": 1.6,    # rugged high ground
 }
 
 # ---------------------------------------------------------------------------
@@ -153,8 +157,10 @@ UNIT_DEFAULT_COMBAT_COST = 10.0   # supply per attack when a unit sets none
 # Close terrain punishes vehicles; infantry is comfortable everywhere.
 ATTACK_TERRAIN_MOD: Dict[str, Dict[str, float]] = {
     "INFANTRY": {"FOREST": 1.0, "URBAN": 1.0},
-    "TANK": {"FOREST": 0.65, "URBAN": 0.55, "HILL": 0.85},
-    "IFV": {"FOREST": 0.75, "URBAN": 0.65, "HILL": 0.90},
+    "TANK": {"FOREST": 0.65, "URBAN": 0.55, "HILL": 0.85,
+             "MOUNTAIN": COMBAT.mountain_vehicle_attack_mult},
+    "IFV": {"FOREST": 0.75, "URBAN": 0.65, "HILL": 0.90,
+            "MOUNTAIN": COMBAT.mountain_vehicle_attack_mult},
     "RECON": {"FOREST": 0.8, "URBAN": 0.7},
     "ARTILLERY": {},
     "SAM": {},
@@ -174,6 +180,7 @@ RATIO_REQUIRED: Dict[str, float] = {
     "HILL": 2.0,
     "PLAIN": 1.3,
     "WATER": 1.3,
+    "MOUNTAIN": 2.5,    # NEW in M2: between hill (2.0) and urban (3.0), matching its 1.6 defence
 }
 COMBAT_INEFFECTIVE = 30.0   # strength below which a unit withdraws
 ARTY_STANDOFF = 1           # margin the guns keep inside their own reach
@@ -200,3 +207,105 @@ REPORT_NEVER_FIRES = 0.02      # contribution per unit-turn below this is idle
 REPORT_STUCK = 0.60            # fraction of its turns spent on its start hex
 REPORT_CUTOFF_HEAVY = 0.50     # fraction of unit-turns spent out of supply
 REPORT_COLOUR_SWING = 0.50     # win-rate gap between playing BLUE and RED
+
+# ---------------------------------------------------------------------------
+# World generation, start positions, match length (PLAN.md §3.1, §6.1)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WorldParams:
+    width: int = 48            # map width in columns; must be even
+    height: int = 32           # map height in rows; must be even
+    noise_scale: float = 9.0   # base wavelength of the elevation noise, in hexes
+    edge_falloff: float = 0.35  # elevation lost at the north/south edges (stops one big landmass)
+    water_fraction: float = 0.30  # target share of WATER hexes
+    min_island: int = 4        # land specks smaller than this become water
+    min_lake: int = 3          # lakes smaller than this become land
+    min_open_sea: int = 12     # NEW: a sea must have at least this many hexes to host ports and ships
+    central_sea_length: float = 1.00  # NEW: central sea ellipse length, fraction of map width
+    central_sea_width: float = 0.20   # NEW: central sea ellipse height, fraction of map height
+    central_sea_depth: float = 0.40   # NEW: elevation removed at the sea's centre (fades to 0 at the rim)
+    central_sea_core: float = 0.50    # NEW: inner fraction of the ellipse forced to WATER
+    mountain_fraction: float = 0.06  # share of land that is MOUNTAIN
+    hill_fraction: float = 0.12      # share of land that is HILL
+    forest_threshold: float = 0.58   # moisture above this turns PLAIN into FOREST
+    rivers_per_half: int = 3   # river sources per half (each is mirrored)
+    min_river_len: int = 4     # rivers shorter than this are dropped
+    cities_per_half: int = 5   # city centres per half
+    city_spacing: int = 5      # minimum hex distance between city centres
+    provinces_per_half: int = 8  # RISK provinces per half
+    region_size: int = 3       # provinces per region (continent bonus group)
+    min_home_provinces: int = 3  # provinces each side owns at the start
+    province_base_value: int = 1  # value of any province
+    city_value: int = 2        # extra value of a province containing a city
+    region_bonus: int = 4      # per-turn bonus for holding a whole region
+
+    def __post_init__(self):
+        if self.width % 2 or self.height % 2:
+            raise ValueError("world width and height must both be even")
+
+
+@dataclass(frozen=True)
+class StartParams:
+    start_pp: int = 100        # production points each side starts with
+    # Starting structures per side, besides the HQ.
+    structures: Tuple[Tuple[str, int], ...] = (
+        ("INDUSTRY", 2), ("POWER", 2), ("DATACENTER", 1),
+        ("RADAR", 2), ("AIRFIELD", 1), ("PORT", 1))
+    # Starting forces per side, in deployment order.
+    forces: Tuple[Tuple[str, int], ...] = (
+        ("INFANTRY", 4), ("TANK", 2), ("IFV", 2), ("RECON", 1),
+        ("ARTILLERY", 2), ("SAM", 1), ("ENGINEER", 1),
+        ("HELICOPTER", 1), ("JET", 1), ("SHIP", 1))
+
+
+@dataclass(frozen=True)
+class MatchParams:
+    max_turns: int = 80        # a match ends at this turn if nobody has won
+
+
+@dataclass(frozen=True)
+class Params:
+    world: WorldParams = WorldParams()
+    start: StartParams = StartParams()
+    match: MatchParams = MatchParams()
+
+
+def _scaled_forces(fn) -> Tuple[Tuple[str, int], ...]:
+    return tuple((name, fn(n)) for name, n in StartParams().forces)
+
+
+PRESETS: Dict[str, Params] = {
+    # tiny: for tests. Half the forces (at least 1 of each).
+    "tiny": Params(
+        world=WorldParams(
+            width=24, height=16, noise_scale=6.0, min_island=3, min_lake=3,
+            rivers_per_half=1, min_river_len=3, cities_per_half=2,
+            city_spacing=4, provinces_per_half=3, region_size=3,
+            min_home_provinces=2),   # 3 would leave no NEUTRAL province
+        start=StartParams(forces=_scaled_forces(lambda n: max(1, n // 2))),
+        match=MatchParams(max_turns=30)),
+    # standard: the defaults above.
+    "standard": Params(),
+    # large: showcase. 1.5x forces, rounded up.
+    "large": Params(
+        world=WorldParams(
+            width=64, height=40, rivers_per_half=4, cities_per_half=7,
+            provinces_per_half=12),
+        start=StartParams(forces=_scaled_forces(lambda n: (3 * n + 1) // 2)),
+        match=MatchParams(max_turns=120)),
+}
+
+
+@dataclass(frozen=True)
+class UIParams:
+    window: Tuple[int, int] = (1600, 900)  # default window size in pixels
+    min_window: Tuple[int, int] = (1280, 720)  # smallest allowed window
+    fps: int = 60              # frame cap
+    hex_size: int = 20         # hex circumradius in pixels at zoom 1.0
+    zoom_min: float = 0.35     # camera zoom limits
+    zoom_max: float = 3.0
+    zoom_step: float = 0.05    # zoom is snapped to this, so surfaces can be cached per step
+    turn_anim_ms: int = 600    # unit move animation per turn (used from M5)
+    panel_width: int = 360     # right-hand side panel
