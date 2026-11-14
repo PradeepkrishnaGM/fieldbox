@@ -100,7 +100,33 @@ an interruption. The Evolution lab shows trait drift, champion Elo, the
 cross-generation win-rate matrix and the outcome mix, and lets you watch a
 champion's replay or play against it.
 
-![Evolution lab on a small test run](docs/evolab.png)
+![Evolution lab showing a full run](docs/evolab.png)
+
+### What a full run found
+
+One run (`evo-standard`, seed 1, 16 genomes, 40 generations, 138 games per
+generation over fresh maps; about 83 minutes on 10 worker processes):
+
+![A champion from generation 39 (BLUE) playing a match](docs/demo.gif)
+
+- **Champion strength rose.** Measured against the three fixed anchors, the mean
+  champion rating was 1701 over generations 0-9 and 1885 over generations
+  30-39. A generation-39 champion scored 10 of 10 against the anchors. The
+  per-generation rating rests on only 10 games, so it is noisy.
+- **The doctrine drifted in a direction.** Across the population, the weight on
+  striking power plants rose from 0.52 to 0.95, infantry fighting vehicles
+  from 0.03 to 0.47 and engineers from 0.02 to 0.37. SAM building fell from
+  0.27 to 0.03, and the HQ defence weight from 0.31 to 0.08. The population
+  traded air defence for armour and an offensive against the enemy's power grid.
+- **Progress is not a clean ladder.** In the cross-generation matrix
+  (4 games per pair) generation 39 beats generation 0 in 3 of 4 games, but
+  generations 20 and 25 each beat generation 39 in 3 of 4 and generation 35
+  in 4 of 4, so there are cycles as well as progress.
+- **Limits.** Every game in the run ended on victory points at the turn
+  limit, never by HQ destruction, so "winning" here means out-scoring the enemy.
+
+![Champion Elo against the anchors](docs/evo_elo.png)
+![Trait drift](docs/evo_traits.png)
 
 A full run (`evo-standard`: 16 genomes, 40 generations) takes roughly an hour
 and a half on a 6-core machine. To use more cores, open
