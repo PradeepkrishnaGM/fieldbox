@@ -128,18 +128,20 @@ hand.
 Ideas this project borrows, from the literature on population-based and
 league training:
 
-- Rosin & Belew (1997), *New methods for competitive coevolution*: the hall of
-  fame, so old strategies are not forgotten.
+- Rosin & Belew (1997), *New methods for competitive coevolution*, Evolutionary
+  Computation 5(1), 1-29: the hall of fame, so old strategies are not forgotten.
 - Vinyals et al. (2019), *Grandmaster level in StarCraft II using multi-agent
-  reinforcement learning*: training against a mix of current, past and fixed
-  opponents.
+  reinforcement learning*, Nature 575, 350-354: training against a league of
+  current, past and fixed opponents.
 - Jaderberg et al. (2019), *Human-level performance in 3D multiplayer games with
-  population-based reinforcement learning*: evolving behaviours inside a
-  population.
-- Baker et al. (2020), *Emergent tool use from multi-agent autocurricula*:
-  successive counter-strategies, the pattern the cross-generation view looks for.
-- Czarnecki et al. (2020), *Real world games look like spinning tops*: why the
-  cross-generation matrix is checked for cycles instead of trusting fitness.
+  population-based reinforcement learning*, Science 364, 859-865: evolving
+  behaviours inside a population.
+- Baker et al. (2020), *Emergent tool use from multi-agent autocurricula*, ICLR
+  2020 (arXiv:1909.07528): successive counter-strategies, the pattern the
+  cross-generation view looks for.
+- Czarnecki et al. (2020), *Real world games look like spinning tops*, NeurIPS
+  2020 (arXiv:2004.09468): why the cross-generation matrix is checked for cycles
+  instead of trusting fitness.
 
 ## Licence
 
