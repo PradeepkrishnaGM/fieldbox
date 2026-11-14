@@ -79,14 +79,33 @@ def engineer_order(obs: Observation, unit: UnitView) -> Optional[Order]:
     return Construct(unit.uid, site, ST.FOB)
 
 
-def structure_order(obs: Observation, unit: UnitView) -> Optional[Order]:
-    """Go for the nearest enemy structure (HQ first on ties). None if the
-    unit cannot attack structures."""
+def nearest_structure(obs: Observation, unit: UnitView, avoid=frozenset(),
+                      undefended: bool = False):
+    """Nearest enemy structure this unit could attack (HQ first on ties).
+    `avoid` = hexes to skip (enemy SAM cover); `undefended` skips structures
+    with an enemy land unit on the hex or next to it."""
     st = unit.stats
-    if Domain.LAND not in st.targets or not obs.enemy_structures:
+    if Domain.LAND not in st.targets:
         return None
-    target = min(obs.enemy_structures,
-                 key=lambda s: (distance(unit.coord, s.coord), s.kind is not ST.HQ, s.sid))
+    cands = []
+    for s in obs.enemy_structures:
+        if s.coord in avoid:
+            continue
+        if undefended and any(e.domain is Domain.LAND and distance(e.coord, s.coord) <= 1
+                              for e in obs.enemy_units):
+            continue
+        cands.append(s)
+    return min(cands, key=lambda s: (distance(unit.coord, s.coord), s.kind is not ST.HQ, s.sid),
+               default=None)
+
+
+def structure_order(obs: Observation, unit: UnitView, avoid=frozenset(),
+                    undefended: bool = False) -> Optional[Order]:
+    """Go for the nearest enemy structure. None if the unit cannot."""
+    target = nearest_structure(obs, unit, avoid, undefended)
+    if target is None:
+        return None
+    st = unit.stats
     if st.domain is Domain.AIR:
         return Strike(unit.uid, target.sid)
     if st.indirect:

@@ -16,7 +16,7 @@ from ..core.hexgrid import distance
 from ..sim.units import Side
 Unit = UnitView
 from . import Agent, register
-from .economy import FixedBuilder, engineer_order, structure_order
+from .economy import FixedBuilder, engineer_order, nearest_structure, structure_order
 
 COUNTERATTACK_THRESHOLD = P.COUNTERATTACK_THRESHOLD  # only counterattack an enemy this broken
 
@@ -136,11 +136,18 @@ class RushAgent(Agent):
                     orders[u.uid] = eng
                     continue
             targets = engageable(obs, u, side)
-            if not targets:
-                orders[u.uid] = structure_order(obs, u) or Hold(u.uid)
-                continue
-            nearest = min(targets, key=lambda e: (distance(u.coord, e.coord), e.uid))
-            orders[u.uid] = simple_engage(obs, u, nearest)
+            nearest = min(targets, key=lambda e: (distance(u.coord, e.coord), e.uid),
+                          default=None)
+            struct = nearest_structure(obs, u)
+            # Structures count as enemies; ties go to the unit.
+            if struct is not None and (nearest is None or
+                                       distance(u.coord, struct.coord) < distance(u.coord, nearest.coord)):
+                orders[u.uid] = structure_order(obs, u) or (
+                    simple_engage(obs, u, nearest) if nearest else Hold(u.uid))
+            elif nearest is not None:
+                orders[u.uid] = simple_engage(obs, u, nearest)
+            else:
+                orders[u.uid] = Hold(u.uid)
         return [orders[k] for k in sorted(orders)] + self.builder.builds(obs)
 
 

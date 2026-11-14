@@ -11,7 +11,7 @@ traits (aggression, force mix, what to protect, what to target). A population
 of doctrines evolves through league play, and commanders counter-build
 against what they observe within a match.
 
-**Status: M4 (in review)** — adds structures (HQ, industry, power, data
+**Status: M4** — adds structures (HQ, industry, power, data
 center, radar, airfield, port, FOB), power, production points and queues,
 command points, engineer-built FOBs, structure-based supply, structure
 combat (assault, bombard, air strike) and HQ-destruction victory on top of the

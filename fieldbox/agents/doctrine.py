@@ -159,7 +159,8 @@ class DoctrineAgent(Agent):
                 continue
             plan.claimed.add(c)
             return MoveTo(unit.uid, c)
-        return None
+        # Nothing left to take: raid an undefended enemy structure.
+        return structure_order(obs, unit, undefended=True)
 
     # -- logistics --------------------------------------------------------
 
@@ -805,6 +806,13 @@ class DoctrineAgent(Agent):
                 # Soft, high-value targets are what air is for.
                 score += 3.0 * (1.0 - e.stats.defense)
                 return score
+
+        # No enemy unit worth chasing nearby: bomb infrastructure that is not
+        # under SAM cover (HQ first on ties).
+        if not any(distance(unit.coord, e.coord) <= AIR_SEARCH_SPAN for e in engageable):
+            so = structure_order(obs, unit, avoid=plan.enemy_air_cover)
+            if so is not None:
+                return so
 
         if uncovered:
             target = max(uncovered, key=lambda e: (value(e), -e.uid))
