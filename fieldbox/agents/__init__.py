@@ -37,9 +37,14 @@ def register(cls: Type[Agent]) -> Type[Agent]:
 
 
 from .scripted import HoldAgent, RandomAgent, RushAgent  # noqa: E402,F401
-from .doctrine import DoctrineAgent  # noqa: E402,F401
+from .tactical import TacticalAgent  # noqa: E402,F401
+from .genome import DoctrineGenome  # noqa: E402,F401
+from .commander import Commander  # noqa: E402,F401
+
+DoctrineAgent = Commander   # the default-genome commander is the `doctrine` anchor
 
 __all__ = [
     "Agent", "REGISTRY", "register",
-    "RandomAgent", "HoldAgent", "RushAgent", "DoctrineAgent",
+    "RandomAgent", "HoldAgent", "RushAgent", "DoctrineAgent", "Commander",
+    "TacticalAgent", "DoctrineGenome",
 ]

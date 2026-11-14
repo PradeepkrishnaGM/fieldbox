@@ -1,4 +1,8 @@
-"""Doctrine-driven rule-based agent.
+"""Tactical layer: the per-unit handlers (retired standalone doctrine agent).
+
+The Commander (commander.py) assigns tasks and calls these handlers; the class
+is also registered as `doctrine-legacy`, the old single-layer agent.
+
 
 Encodes a handful of real tactical principles rather than ad-hoc heuristics:
 
@@ -67,8 +71,8 @@ class Plan:
 
 
 @register
-class DoctrineAgent(Agent):
-    name = "doctrine"
+class TacticalAgent(Agent):
+    name = "doctrine-legacy"
 
     def __init__(self, aggression: float = 1.0) -> None:
         self._approach_cache = {}
@@ -77,6 +81,7 @@ class DoctrineAgent(Agent):
         # <1 makes the agent more cautious, >1 more willing to attack at
         # unfavourable odds. Handy knob for building an opponent pool later.
         self.aggression = aggression
+        self.withdraw_below = COMBAT_INEFFECTIVE    # the Commander sets this from its genome
 
     def reset(self, side, world) -> None:
         super().reset(side, world)
@@ -545,7 +550,7 @@ class DoctrineAgent(Agent):
 
     def _manoeuvre(self, obs, side, unit, enemies, plan,
                    exploit: bool = True) -> Order:
-        if unit.strength < COMBAT_INEFFECTIVE and obs.enemies_adjacent(unit.coord, side):
+        if unit.strength < self.withdraw_below and obs.enemies_adjacent(unit.coord, side):
             return self._withdraw(obs, side, unit, plan)
 
         adjacent = [
@@ -566,7 +571,7 @@ class DoctrineAgent(Agent):
         return Hold(unit.uid)
 
     def _infantry(self, obs, side, unit, enemies, plan) -> Order:
-        if unit.strength < COMBAT_INEFFECTIVE and obs.enemies_adjacent(unit.coord, side):
+        if unit.strength < self.withdraw_below and obs.enemies_adjacent(unit.coord, side):
             return self._withdraw(obs, side, unit, plan)
 
         # A capital stays ours once taken (provinces keep their owner), so
@@ -795,7 +800,7 @@ class DoctrineAgent(Agent):
         The whole behaviour is therefore built around `air_threat`: strike
         what is not covered, and do not loiter under a SAM umbrella.
         """
-        if unit.strength < COMBAT_INEFFECTIVE:
+        if unit.strength < self.withdraw_below:
             step = self._advance_position(
                 obs, side, unit, enemies,
                 self._rear_hex(obs, side), 0,

@@ -384,3 +384,80 @@ class UIParams:
     zoom_step: float = 0.05    # zoom is snapped to this, so surfaces can be cached per step
     turn_anim_ms: int = 600    # unit move animation per turn (used from M5)
     panel_width: int = 360     # right-hand side panel
+
+
+# ---------------------------------------------------------------------------
+# Doctrine genome and commander (M7)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class GenomeParams:
+    mut_prob: float = 0.3               # per-gene mutation probability
+    mut_sigma: float = 0.08             # gaussian step of a mutation
+    cx_prob: float = 0.5                # probability that crossover happens at all (else child = copy of parent A)
+    # Decoder ranges (trait 0 -> first value, trait 1 -> second).
+    required_ratio_mult: Tuple[float, float] = (1.6, 0.6)   # aggression: force-ratio multiplier
+    concentration: Tuple[float, float] = (0.4, 0.95)        # share of the strike force on the main effort
+    reserve: Tuple[float, float] = (0.0, 0.3)               # share of land units kept back
+    retreat: Tuple[float, float] = (15.0, 50.0)             # withdraw below this strength
+
+
+GENOME = GenomeParams()
+
+# Default genome values (the "doctrine" baseline). Anything not listed is 0.5.
+GENOME_DEFAULTS: Dict[str, float] = {
+    "aggression": 0.6,                  # decodes to ratio multiplier 1.0 = the old doctrine
+    "concentration": 0.7, "reserve": 0.0,
+    "retreat": 0.43,                    # decodes to 30 = the old COMBAT_INEFFECTIVE
+    "expansion": 0.5, "econ_invest": 0.5,
+    "w_build_infantry": 0.25, "w_build_tank": 0.25, "w_build_ifv": 0.0, "w_build_recon": 0.0,
+    "w_build_artillery": 0.25, "w_build_sam": 0.25, "w_build_helicopter": 0.5,
+    "w_build_jet": 0.5, "w_build_ship": 0.0, "w_build_engineer": 0.0,
+    "defend_hq": 0.3, "defend_industry": 0.2, "defend_power": 0.2, "defend_datacenter": 0.2,
+    "target_units": 0.5, "target_industry": 0.5, "target_power": 0.5, "target_datacenter": 0.5,
+    "target_hq": 0.5, "target_airfield": 0.5,
+    "air_role": 0.2, "fob_forward": 0.5, "adaptivity": 0.2,
+}
+
+
+@dataclass(frozen=True)
+class CommanderParams:
+    # Target scoring: base value in VP-equivalents.
+    horizon: float = 15.0               # capital base = province value x horizon x swing
+    structure_base: Tuple[Tuple[str, float], ...] = (
+        ("HQ", 200.0), ("INDUSTRY", 40.0), ("POWER", 35.0), ("DATACENTER", 35.0),
+        ("AIRFIELD", 25.0), ("PORT", 15.0), ("FOB", 15.0), ("RADAR", 10.0))
+    unit_group_coef: float = 0.5        # unit-group base = coef x sum(cost x strength/100)
+    dist_div_frac: float = 0.25         # distance divisor D = map width x this
+    base_ratio: float = 1.5             # strike/defence ratio that counts as fully feasible (x aggression multiplier)
+    assumed_defence: float = 60.0       # cost-points assumed to defend an unseen enemy-held target
+    hysteresis: float = 1.25            # a rival must beat the current main effort by this factor
+    secondary_min_dist: int = 4         # secondary effort must be this far from the main one
+    secondary_min_force: int = 4        # strike units needed before a secondary effort is opened
+    # Garrisons and reserve.
+    garrison_radius: int = 6            # an enemy this close to an own asset makes it "threatened"
+    garrison_max: int = 3               # units at a threatened asset when its defend weight is 1
+    garrison_always: float = 0.75       # defend weight at/above which one unit always stands guard
+    hold_back_frac: float = 0.5         # garrison + reserve never exceed this share of land units
+    # Build plan.
+    econ_floor_mult: float = 1.5        # PP held back = econ_invest x this x FOB cost while FOBs are wanted
+    # Adaptation (PLAN 4.4).
+    adapt_interval: int = 5
+    adapt_window: int = 10
+    adapt_defend_gain: float = 0.25     # defend-weight boost for a structure type hit in the window (x adaptivity)
+    adapt_min_change: float = 0.05      # emit an `adapted` event only when a shift moves by this much
+    # Land task labels need these thresholds.
+    own_hit_drop: float = 1.0           # strength loss that counts as "hit"
+
+
+COMMANDER = CommanderParams()
+
+# Enemy unit type -> own unit types that beat it.
+COUNTER_TABLE: Dict[str, Tuple[str, ...]] = {
+    "HELICOPTER": ("SAM",), "JET": ("SAM",),
+    "SAM": ("TANK", "IFV"),
+    "TANK": ("ARTILLERY", "INFANTRY"), "IFV": ("ARTILLERY", "INFANTRY"),
+    "SHIP": ("JET", "ARTILLERY"),
+    "ARTILLERY": ("RECON", "JET"),
+    "INFANTRY": ("TANK",),
+}

@@ -39,7 +39,7 @@ KIND_GROUP = {
     "power_low": "econ",
     "province_flipped": "map", "structure_captured": "map", "supply_cut": "map",
     "game_over": "map",
-    "order_rejected": "orders", "orders_capped": "orders",
+    "order_rejected": "orders", "orders_capped": "orders", "adapted": "orders",
 }
 LOG_LINE_H = 16
 SIDES = (Side.BLUE, Side.RED)
@@ -683,6 +683,7 @@ class MatchScreen(Screen):
                  theme.TEXT if row[7] else theme.BAD),
                 (f"entrench {row[8]}   move {st.move:g}  reach {st.reach}  spot {st.spot}", theme.DIM),
                 (f"order: {row[9] or '-'}", theme.TEXT),
+                (f"task: {(row[10] if len(row) > 10 else '') or '-'}", theme.TEXT),
             ]
         if sel and sel[0] == "structure":
             row = next((r for r in self._structure_rows() if r[0] == sel[1]), None)
@@ -741,6 +742,11 @@ class MatchScreen(Screen):
             return f"{self._uname(d['uid'])} cut off"
         if k == "order_rejected":
             return f"order rejected: {d['reason']}"
+        if k == "adapted":
+            if d.get("mode") == "defend":
+                return "adapted: defend " + ", ".join(d.get("kinds", [])) if d.get("kinds") else "adapted: defence reset"
+            sh = ", ".join(f"{n.lower()} +{v:.2f}" for n, v in d.get("shifts", {}).items())
+            return f"adapted: build {sh or 'reset'}"
         if k == "orders_capped":
             return f"CP cap: {d['dropped']} orders dropped"
         if k == "power_low":

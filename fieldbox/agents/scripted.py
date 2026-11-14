@@ -30,6 +30,8 @@ def simple_engage(obs: Observation, unit: Unit, target: Unit) -> Order:
     if unit.stats.indirect:
         if distance(unit.coord, target.coord) <= unit.stats.reach:
             return Bombard(unit.uid, target.coord)
+        if not obs.map.passable(target.coord, unit.domain):
+            return Hold(unit.uid)         # e.g. artillery cannot sail onto a ship
         return MoveTo(unit.uid, target.coord)
     return Attack(unit.uid, target.uid)
 

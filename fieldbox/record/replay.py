@@ -22,8 +22,9 @@ from typing import Dict, List, Optional
 
 from ..sim.units import Side
 
-VERSION = 2          # 2 adds per-side visibility, ghosts and known structures (fog of war)
-READABLE = (1, 2)
+VERSION = 3          # 2 adds per-side visibility, ghosts and known structures (fog of war);
+                     # 3 adds a task text per unit (row[10]) and agent `adapted` events
+READABLE = (1, 2, 3)
 
 
 class ReplayError(Exception):
@@ -50,15 +51,17 @@ def _order_text(o) -> str:
     return n.lower()
 
 
-def snapshot(game) -> dict:
-    """Plain-data state of a Game (units, structures, owners, economy)."""
+def snapshot(game, tasks=None) -> dict:
+    """Plain-data state of a Game (units, structures, owners, economy).
+    `tasks` = uid -> the task text an agent gave the unit (optional)."""
+    tasks = tasks or {}
     sides = (Side.BLUE, Side.RED)
     t = game.turn
     return {
         "turn": game.turn,
         "units": [[u.uid, int(u.side), u.utype.name, u.q, u.r, round(u.strength, 2),
                    round(u.supply, 1), int(u.in_supply), u.entrench,
-                   _order_text(game.standing.get(u.uid))]
+                   _order_text(game.standing.get(u.uid)), tasks.get(u.uid, "")]
                   for u in sorted(game.units.values(), key=lambda x: x.uid)],
         "structures": [[s.sid, s.kind.name, int(s.side), s.q, s.r, round(s.strength, 2)]
                        for s in sorted(game.structures.values(), key=lambda x: x.sid)],
@@ -160,9 +163,18 @@ class LiveMatch:
         g = self.game
         if g.is_over:
             return
-        g.step_turn({s: self.agents[s].act(g.observe(s)) for s in (Side.BLUE, Side.RED)})
-        self.replay.snapshots.append(snapshot(g))
-        self.replay.events.append([json.loads(e.to_json()) for e in g.events[self._seen:]])
+        turn = g.turn
+        orders = {s: self.agents[s].act(g.observe(s)) for s in (Side.BLUE, Side.RED)}
+        tasks, extra = {}, []
+        for s in (Side.BLUE, Side.RED):           # optional agent hooks (commander)
+            a = self.agents[s]
+            if hasattr(a, "tasks"):
+                tasks.update(a.tasks())
+            if hasattr(a, "drain_events"):
+                extra += [{"t": turn, "k": e["k"], "s": e["s"], "d": e["d"]} for e in a.drain_events()]
+        g.step_turn(orders)
+        self.replay.snapshots.append(snapshot(g, tasks))
+        self.replay.events.append([json.loads(e.to_json()) for e in g.events[self._seen:]] + extra)
         self._seen = len(g.events)
         if g.is_over:
             w = g.winner()

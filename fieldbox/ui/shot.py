@@ -59,11 +59,13 @@ def main(argv=None) -> None:
     p.add_argument("--game-seed", type=int, default=0)
     p.add_argument("--replay", default=None, help="match: render a saved replay")
     p.add_argument("--view", default="god", choices=["god", "blue", "red"], help="match: fog view")
+    p.add_argument("--select-unit", type=int, default=None, help="match: select this unit id")
     p.add_argument("--rings", action="store_true", help="match: show radar range rings")
     a = p.parse_args(argv)
     print(render_screen(a.screen, a.out, a.seed, a.preset, turns=a.turns, anim=a.anim,
                         blue=a.blue, red=a.red, game_seed=a.game_seed, replay=a.replay,
-                        view={"god": None, "blue": 0, "red": 1}[a.view], rings=a.rings))
+                        view={"god": None, "blue": 0, "red": 1}[a.view], rings=a.rings,
+                        select=None if a.select_unit is None else ("unit", a.select_unit)))
 
 
 if __name__ == "__main__":
