@@ -117,6 +117,19 @@ def cmd_evolve(args) -> None:
     print(f"done: {d}")
 
 
+def gui_main(argv=None) -> None:
+    """Entry point of the `fieldbox` command: no arguments opens the menu."""
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
+        try:
+            from .ui.app import run_gui
+        except ImportError:
+            raise SystemExit("the window needs pygame-ce:  pip install 'fieldbox[ui]'")
+        run_gui("menu")
+        return
+    main(args)
+
+
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="fieldbox")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -186,7 +199,7 @@ def main(argv=None) -> None:
     wg.set_defaults(func=cmd_worldgen)
 
     gu = sub.add_parser("gui", help="open a desktop window (needs pygame-ce)")
-    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match", "evolab"])
+    gu.add_argument("--screen", default="menu", choices=["menu", "setup", "mapview", "symbols", "match", "evolab"])
     gu.add_argument("--seed", type=int, default=1, help="map seed")
     gu.add_argument("--preset", default="standard", choices=sorted(WORLD_PRESETS))
     gu.add_argument("--blue", default="doctrine", help="match: BLUE agent")

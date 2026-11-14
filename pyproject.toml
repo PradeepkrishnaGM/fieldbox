@@ -13,9 +13,11 @@ dependencies = []          # engine is stdlib-only, keep it that way
 
 [project.optional-dependencies]
 ui = ["pygame-ce>=2.5"]
+dist = ["pygame-ce>=2.5", "pyinstaller>=6"]
 
 [project.scripts]
-fieldbox = "fieldbox.__main__:main"
+fieldbox = "fieldbox.__main__:gui_main"
+fieldbox-cli = "fieldbox.__main__:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "fieldbox.__version__" }

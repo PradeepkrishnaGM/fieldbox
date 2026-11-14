@@ -50,7 +50,7 @@ def render_screen(name: str, out: str, seed: int = 1, preset: str = "standard",
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="fieldbox.ui.shot")
-    p.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match", "evolab"])
+    p.add_argument("--screen", default="mapview", choices=["menu", "setup", "mapview", "symbols", "match", "evolab"])
     p.add_argument("--seed", type=int, default=1, help="map seed")
     p.add_argument("--preset", default="standard")
     p.add_argument("--out", required=True)

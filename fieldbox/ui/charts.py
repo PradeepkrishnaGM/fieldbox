@@ -88,6 +88,8 @@ def line_chart(surf: pygame.Surface, rect: pygame.Rect, title: str,
     _xlabels(surf, plot, n)
     names, colors = [], []
     for k, (name, v) in enumerate(series.items()):
+        if not v:
+            continue
         c = PALETTE[k % len(PALETTE)]
         names.append(name)
         colors.append(c)

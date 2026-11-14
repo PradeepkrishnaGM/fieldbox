@@ -45,6 +45,12 @@ LOG_LINE_H = 16
 SIDES = (Side.BLUE, Side.RED)
 
 
+def _default_speed() -> int:
+    from ... import settings
+    v = settings.load()["anim_speed"]
+    return next((i for i, (_, x) in enumerate(SPEEDS) if x == v), 1)
+
+
 def _ease(t: float) -> float:
     return t * t * (3 - 2 * t)
 
@@ -55,16 +61,14 @@ class MatchScreen(Screen):
     @classmethod
     def create(cls, app, seed: int = 1, preset: str = "tiny", blue: str = "doctrine",
                red: str = "rush", game_seed: int = 0, turns: Optional[int] = None,
-               replay: Optional[str] = None, **_) -> "MatchScreen":
+               replay: Optional[str] = None, **opts) -> "MatchScreen":
         if replay:
             rep = Replay.load(replay)
             return cls(app, rep.world(), rep, None)
-        from ...agents import REGISTRY
-        for name in (blue, red):
-            if name not in REGISTRY:
-                raise SystemExit(f"unknown agent '{name}'. available: {', '.join(REGISTRY)}")
+        from ...league.roster import make
+        root = opts.get("root") or "runs/evo"
         world = generate_world(seed, preset)
-        live = LiveMatch(REGISTRY[blue](), REGISTRY[red](), world, seed=game_seed,
+        live = LiveMatch(make(blue, root), make(red, root), world, seed=game_seed,
                          max_turns=turns, blue_name=blue, red_name=red)
         return cls(app, world, live.replay, live)
 
@@ -76,7 +80,7 @@ class MatchScreen(Screen):
         self.idx = 0                         # displayed snapshot
         self.anim: Optional[float] = None    # None, or 0..1 progress of the move into `idx`
         self.playing = live is not None
-        self.speed = 1
+        self.speed = _default_speed()
         self.tint, self.grid = True, False
         self.view: Optional[int] = None      # None = God view, 0/1 = what BLUE/RED sees (fog)
         self.rings = False                   # radar range rings

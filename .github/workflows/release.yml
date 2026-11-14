@@ -1,0 +1,42 @@
+# Builds a Linux AppImage and a Windows exe. Runs ONLY on version tags or when
+# started by hand from the Actions tab; never on push or pull request.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ".[dist]"
+      - run: pyinstaller packaging/fieldbox.spec
+      - name: Assemble the AppImage
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp -r dist/fieldbox/* AppDir/usr/bin/
+          cp packaging/fieldbox.desktop AppDir/fieldbox.desktop
+          cp packaging/fieldbox.png AppDir/fieldbox.png
+          printf '#!/bin/sh\nexec "$(dirname "$0")/usr/bin/fieldbox" "$@"\n' > AppDir/AppRun
+          chmod +x AppDir/AppRun
+          curl -L -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run AppDir Fieldbox-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with: { name: fieldbox-linux, path: Fieldbox-x86_64.AppImage }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install ".[dist]"
+      - run: pyinstaller packaging/fieldbox.spec
+      - run: Compress-Archive -Path dist/fieldbox -DestinationPath fieldbox-windows.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: fieldbox-windows, path: fieldbox-windows.zip }

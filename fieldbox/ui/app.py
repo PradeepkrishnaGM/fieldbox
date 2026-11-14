@@ -26,7 +26,10 @@ class Screen:
 
 
 class App:
-    def __init__(self, size=UI.window) -> None:
+    def __init__(self, size=None) -> None:
+        if size is None:
+            from .. import settings
+            size = tuple(settings.load()["window"])
         pygame.init()
         theme.reset_fonts()
         self.window = pygame.display.set_mode(size, pygame.RESIZABLE)
@@ -82,6 +85,12 @@ def make_screen(name: str, app: App, seed: int = 1, preset: str = "standard", **
     if name == "match":
         from .screens.match import MatchScreen
         return MatchScreen.create(app, seed=seed, preset=preset, **opts)
+    if name == "menu":
+        from .screens.menu import MenuScreen
+        return MenuScreen(app)
+    if name == "setup":
+        from .screens.setup import SetupScreen
+        return SetupScreen(app, root=opts.get("root") or "runs/evo")
     if name == "evolab":
         from .screens.evolab import EvoLabScreen
         return EvoLabScreen(app, root=opts.get("root") or "runs/evo", run=opts.get("run"))

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Fieldbox
+Comment=Hex wargame with evolving AI commanders
+Exec=fieldbox
+Icon=fieldbox
+Categories=Game;StrategyGame;
