@@ -179,7 +179,7 @@ def run(preset: str, blue_name: str, red_name: str, games: int,
         map_seeds=(1, 2, 3, 4), outdir: Optional[str] = None) -> str:
     """Play a batch, return the report text, optionally write CSVs."""
     from ..agents import REGISTRY
-    from ..sim.scenario import Scenario
+    from ..world import generate_world
 
     def make(name, seed):
         """Construct an agent, seeding only the ones that take a seed.
@@ -200,21 +200,19 @@ def run(preset: str, blue_name: str, red_name: str, games: int,
             return cls(seed=seed)
         return cls()
 
-    # Play every pairing both ways. A single-colour batch is misleading: in
-    # this game the second mover has a large advantage in asymmetric
-    # matchups, so running only "A as BLUE" reports turn order as if it were
-    # policy strength.
+    # Play every pairing both ways, so colour can never pass for policy
+    # strength (it did, badly, under the old sequential turns).
     records: List[Recorder] = []          # records where `blue_name` played BLUE
     swapped: List[Recorder] = []
     wins_as_blue = wins_as_red = 0
     turns_total = 0
-    scenarios = [Scenario.preset(preset, map_seed=s) for s in map_seeds]
+    worlds = [generate_world(s, preset) for s in map_seeds]
     half = max(1, games // 2)
 
     for i in range(half):
-        scenario = scenarios[i % len(scenarios)]
+        world = worlds[i % len(worlds)]
         game, rec = play_recorded(
-            make(blue_name, i), make(red_name, i + 500), scenario, seed=i
+            make(blue_name, i), make(red_name, i + 500), world, seed=i
         )
         records.append(rec)
         if rec.meta["winner"] == "BLUE":
@@ -222,7 +220,7 @@ def run(preset: str, blue_name: str, red_name: str, games: int,
         turns_total += game.turn
 
         game2, rec2 = play_recorded(
-            make(red_name, i + 500), make(blue_name, i), scenario, seed=i
+            make(red_name, i + 500), make(blue_name, i), world, seed=i
         )
         swapped.append(rec2)
         if rec2.meta["winner"] == "RED":

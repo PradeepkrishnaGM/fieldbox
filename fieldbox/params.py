@@ -96,7 +96,8 @@ DEF_MULT: Dict[str, float] = {
 # Units (keys: UnitType names, in UnitType order)
 # ---------------------------------------------------------------------------
 # move: MP per turn; attack/defense: combat coefficients; reach: max range
-# (1 = direct fire); spot: detection radius; domain/targets: Domain names;
+# (1 = direct fire); spot: detection radius; cost: PP to build; build_turns:
+# turns in the queue (both used from M4); domain/targets: Domain names;
 # can_capture: may hold an objective; entrenches: may dig in; fire_coef:
 # ranged effectiveness; upkeep: supply burned per turn; combat_cost: supply
 # burned per attack. label/glyph/sidc are display data kept with the stats.
@@ -104,51 +105,66 @@ DEF_MULT: Dict[str, float] = {
 UNIT_STATS: Dict[str, dict] = {
     # --- Land: manoeuvre and holding ground ---
     "INFANTRY": dict(move=4, attack=1.00, defense=1.30, reach=1, spot=2,
+                  cost=20, build_turns=2,
                      label="INF", glyph="I", sidc_function="UCI---",
                      domain="LAND", targets=("LAND",),
                      can_capture=True, entrenches=True),
     "TANK": dict(move=7, attack=1.70, defense=1.00, reach=1, spot=2,
+              cost=45, build_turns=3,
                  label="TNK", glyph="A", sidc_function="UCA---",
                  domain="LAND", targets=("LAND",),
                  can_capture=True, entrenches=True),
     "IFV": dict(move=8, attack=1.20, defense=0.95, reach=1, spot=3,
+             cost=35, build_turns=3,
                 label="IFV", glyph="M", sidc_function="UCIZ--",
                 domain="LAND", targets=("LAND",),
                 can_capture=True, entrenches=True),
     "RECON": dict(move=9, attack=0.55, defense=0.60, reach=1, spot=4,
+               cost=20, build_turns=2,
                   label="RCN", glyph="R", sidc_function="UCR---",
                   domain="LAND", targets=("LAND",),
                   can_capture=True, entrenches=False),
     # --- Land: fires and air defence ---
     # Guns eat ammunition: a battery out of supply is just a slow truck.
     "ARTILLERY": dict(move=3, attack=1.45, defense=0.45, reach=3, spot=1,
+                   cost=40, build_turns=3,
                       label="ART", glyph="T", sidc_function="UCF---",
                       domain="LAND", targets=("LAND", "SEA"),
                       can_capture=False, entrenches=True,
                       upkeep=3.0, combat_cost=20.0),
     # Air defence counters air power and nothing else; fragile and slow.
     "SAM": dict(move=2, attack=2.60, defense=0.35, reach=4, spot=3,
+             cost=45, build_turns=3,
                 label="SAM", glyph="S", sidc_function="UCDS--",
                 domain="LAND", targets=("AIR",),
                 can_capture=False, entrenches=True,
                 fire_coef=COMBAT.direct_ad_coef, upkeep=3.0, combat_cost=16.0),
     # --- Air: fast, cannot hold ground, cannot dig in ---
     "HELICOPTER": dict(move=10, attack=1.40, defense=0.70, reach=1, spot=3,
+                    cost=50, build_turns=3,
                        label="HEL", glyph="H", sidc_function="MFH---",
                        domain="AIR", targets=("LAND", "SEA"),
                        can_capture=False, entrenches=False,
                        upkeep=16.0, combat_cost=14.0),
     "JET": dict(move=16, attack=1.90, defense=0.60, reach=1, spot=4,
+             cost=70, build_turns=4,
                 label="JET", glyph="J", sidc_function="MFF---",
                 domain="AIR", targets=("LAND", "SEA"),
                 can_capture=False, entrenches=False,
                 upkeep=22.0, combat_cost=16.0),
     # --- Sea ---
     "SHIP": dict(move=5, attack=1.55, defense=1.10, reach=4, spot=4,
+              cost=80, build_turns=5,
                  label="SHP", glyph="N", sidc_function="CLFF--",
                  domain="SEA", targets=("LAND", "SEA"),
                  can_capture=False, entrenches=False,
                  upkeep=4.0, combat_cost=14.0),
+    # --- Added in M3: builds FOBs and repairs structures (from M4) ---
+    "ENGINEER": dict(move=4, attack=0.40, defense=0.70, reach=1, spot=2,
+                     cost=25, build_turns=2,
+                     label="ENG", glyph="E", sidc_function="UCE---",
+                     domain="LAND", targets=("LAND",),
+                     can_capture=False, entrenches=True),
 }
 UNIT_DEFAULT_UPKEEP = 2.0         # supply per turn when a unit sets no upkeep
 UNIT_DEFAULT_COMBAT_COST = 10.0   # supply per attack when a unit sets none
@@ -167,6 +183,7 @@ ATTACK_TERRAIN_MOD: Dict[str, Dict[str, float]] = {
     "HELICOPTER": {"FOREST": 0.85, "URBAN": 0.75},
     "JET": {"FOREST": 0.9, "URBAN": 0.8},
     "SHIP": {},
+    "ENGINEER": {"FOREST": 1.0, "URBAN": 1.0},
 }
 
 # ---------------------------------------------------------------------------
@@ -193,6 +210,8 @@ RESUPPLY_THRESHOLD = 35.0   # stock below which a cut-off unit disengages
 EXPOSURE_PENALTY = 0.30     # extra force ratio demanded per uncovered flank
 SAM_MIN_STANDOFF = 3        # air defence cannot fight ground: keep clear
 AIR_COVER_BONUS = 8.0       # value of sitting under a friendly SAM umbrella
+EXPANSION_SAFE_RADIUS = 4    # NEW (M3): fast capturing units expand to unheld capitals while no enemy land unit is this close
+THREAT_RADIUS = 2           # NEW (M3): infantry keeps holding a taken capital while an enemy that can capture is this close
 
 # Scripted agents
 COUNTERATTACK_THRESHOLD = 25.0  # rush agent only counterattacks an enemy this broken

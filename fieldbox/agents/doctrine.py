@@ -23,11 +23,13 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Set
 
 from .. import params as P
-from ..sim.engine import Attack, Bombard, Game, Hold, MoveTo, Order
+from ..sim.observation import Observation
+from ..sim.orders import Attack, Bombard, Hold, MoveTo, Order
 from ..core.hexgrid import Coord, Domain, Terrain, disc_offsets, distance
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from ..sim.units import Side, Unit
+from ..sim.units import Side
+from ..sim.observation import UnitView as Unit
 from . import Agent, register
 
 # Local force ratio required to launch a deliberate attack, by defender terrain.
@@ -44,6 +46,8 @@ RESUPPLY_THRESHOLD = P.RESUPPLY_THRESHOLD
 EXPOSURE_PENALTY = P.EXPOSURE_PENALTY
 SAM_MIN_STANDOFF = P.SAM_MIN_STANDOFF
 AIR_COVER_BONUS = P.AIR_COVER_BONUS
+THREAT_RADIUS = P.THREAT_RADIUS
+EXPANSION_SAFE_RADIUS = P.EXPANSION_SAFE_RADIUS
 
 
 @dataclass
@@ -57,6 +61,7 @@ class Plan:
     main_effort: Optional[Coord]
     enemy_air_cover: Set[Coord]     # hexes under hostile surface-to-air fire
     own_air_cover: Set[Coord]       # hexes our own air defence protects
+    claimed: Set[Coord] = field(default_factory=set)  # capitals already given to an infantry unit this turn
 
 
 @register
@@ -71,16 +76,17 @@ class DoctrineAgent(Agent):
 
     # -- main ------------------------------------------------------------
 
-    def act(self, game: Game, side: Side) -> Dict[int, Order]:
-        mine = game.units_of(side)
-        enemies = game.units_of(side.other)
+    def act(self, obs: Observation) -> List[Order]:
+        side = obs.side
+        mine = obs.units_of(side)
+        enemies = obs.units_of(side.other)
         if not mine:
-            return {}
+            return []
 
         plan = Plan(
-            main_effort=self._select_main_effort(game, side),
-            enemy_air_cover=self._air_defence_coverage(game, side.other),
-            own_air_cover=self._air_defence_coverage(game, side),
+            main_effort=self._select_main_effort(obs, side),
+            enemy_air_cover=self._air_defence_coverage(obs, side.other),
+            own_air_cover=self._air_defence_coverage(obs, side),
         )
         orders: Dict[int, Order] = {}
         for unit in mine:
@@ -90,33 +96,73 @@ class DoctrineAgent(Agent):
             # opportunity. This is checked before role dispatch so every unit
             # type gets it without nine separate copies.
             if self._needs_resupply(unit):
-                step = self._resupply_move(game, side, unit)
+                step = self._resupply_move(obs, side, unit)
                 if step is not None and step != unit.coord:
                     orders[unit.uid] = MoveTo(unit.uid, step)
                     continue
+            expand = self._expand(obs, side, unit, enemies, plan)
+            if expand is not None:
+                orders[unit.uid] = expand
+                continue
             handler = getattr(self, f"_{self._role(unit)}")
-            orders[unit.uid] = handler(game, side, unit, enemies, plan)
-        return orders
+            orders[unit.uid] = handler(obs, side, unit, enemies, plan)
+        return [orders[uid] for uid in sorted(orders)]
+
+    # -- expansion ----------------------------------------------------------
+
+    def _expand(self, obs, side, unit, enemies, plan) -> Optional[Order]:
+        """Fast capturing units take unheld capitals while the way is clear.
+
+        Provinces score every turn for their owner, so early expansion
+        decides the VP race. Returns None to fall back to the normal role.
+        """
+        st = unit.stats
+        if not (st.can_capture and st.move >= 7 and st.domain is Domain.LAND):
+            return None
+        land = [e for e in enemies if e.domain is Domain.LAND]
+        if any(distance(e.coord, unit.coord) <= EXPANSION_SAFE_RADIUS for e in land):
+            return None
+        if unit.coord in obs.objectives:
+            if obs.objective_holder(unit.coord) != side:
+                plan.claimed.add(unit.coord)
+                return Hold(unit.uid)
+            if any(e.stats.can_capture and distance(e.coord, unit.coord) <= THREAT_RADIUS
+                   for e in land):
+                return None
+        unheld = [
+            c for c in obs.objectives
+            if obs.objective_holder(c) != side and c not in plan.claimed
+            and c != unit.coord and obs.map.passable(c, unit.domain)
+        ]
+        for c in sorted(unheld, key=lambda c: (distance(unit.coord, c), c)):
+            if obs.path_cost(unit.coord, c, unit.domain) is None:
+                continue
+            occ = obs.unit_at(c, unit.domain)
+            if occ is not None and occ.side != side:
+                continue
+            plan.claimed.add(c)
+            return MoveTo(unit.uid, c)
+        return None
 
     # -- logistics --------------------------------------------------------
 
     def _needs_resupply(self, unit: Unit) -> bool:
         return not unit.in_supply and unit.supply < RESUPPLY_THRESHOLD
 
-    def _resupply_move(self, game, side, unit) -> Optional[Coord]:
+    def _resupply_move(self, obs, side, unit) -> Optional[Coord]:
         """Nearest hex this unit's domain can draw supply from.
 
         For aircraft this is what produces the sortie cycle: they burn stock
         roughly ten times faster than infantry, run dry over the objective,
         and fly home to rearm rather than loitering until they are shot down.
         """
-        net = game.supply_net.get(side, {}).get(unit.domain)
+        net = obs.supply_net.get(side, {}).get(unit.domain)
         if not net:
             return None
         best = None
         best_d = 10 ** 9
         for coord in net:
-            occupant = game.unit_at(coord, unit.domain)
+            occupant = obs.unit_at(coord, unit.domain)
             if occupant is not None and occupant.uid != unit.uid:
                 continue
             d = distance(unit.coord, coord)
@@ -140,6 +186,8 @@ class DoctrineAgent(Agent):
             return "air"
         if st.targets == frozenset({Domain.AIR}):
             return "air_defence"
+        if not st.can_capture and not st.indirect and st.attack < 0.5:
+            return "support"        # engineers: keep them back until M4 gives them work
         if st.indirect:
             return "fires"          # artillery, and naval gunfire
         if not st.entrenches and st.attack < 0.7:
@@ -150,35 +198,38 @@ class DoctrineAgent(Agent):
 
     # -- planning ---------------------------------------------------------
 
-    def _select_main_effort(self, game: Game, side: Side) -> Optional[Coord]:
+    def _select_main_effort(self, obs: Observation, side: Side) -> Optional[Coord]:
         """Highest value objective, tie-broken toward the one we can reach
         soonest. Held-and-uncontested objectives are deprioritised."""
-        capturing = [u for u in game.units_of(side) if u.stats.can_capture]
-        if not capturing or not game.objectives:
+        capturing = [u for u in obs.units_of(side) if u.stats.can_capture]
+        if not capturing or not obs.objectives:
             return None
         best = None
         best_score = -1e9
-        for coord, value in game.objectives.items():
-            holder = game.objective_holder(coord)
-            if holder == side and not game.enemies_adjacent(coord, side):
+        for coord, value in obs.objectives.items():
+            holder = obs.objective_holder(coord)
+            if holder == side and not obs.enemies_adjacent(coord, side):
                 continue  # already secure, don't waste the main effort
             reach = min(distance(u.coord, coord) for u in capturing)
-            score = value * 10.0 - reach
+            # Provinces keep their owner, so an enemy-held capital is a
+            # double swing (their VP stop, ours start); a neutral one is single.
+            swing = 2.0 if holder is not None and holder != side else 1.0
+            score = value * 10.0 * swing - reach
             if score > best_score:
                 best_score = score
                 best = coord
         if best is None:
-            best = max(game.objectives.items(), key=lambda kv: kv[1])[0]
+            best = max(obs.objectives.items(), key=lambda kv: kv[1])[0]
         return best
 
-    def _air_defence_coverage(self, game: Game, side: Side) -> Set[Coord]:
+    def _air_defence_coverage(self, obs: Observation, side: Side) -> Set[Coord]:
         """Hexes under enemy surface-to-air cover.
 
         Flying through this is how air assets die, so every air movement
         decision is filtered through it.
         """
         covered: Set[Coord] = set()
-        for u in game.units_of(side):
+        for u in obs.units_of(side):
             st = u.stats
             if Domain.AIR not in st.targets:
                 continue
@@ -187,12 +238,12 @@ class DoctrineAgent(Agent):
                 covered.add((uq + dq, ur + dr))
         return covered
 
-    def _local_odds(self, game: Game, attacker: Unit, defender: Unit) -> float:
-        ap = game._attack_power(attacker, defender)
-        dp = game._defense_power(defender, attacker)
+    def _local_odds(self, obs: Observation, attacker: Unit, defender: Unit) -> float:
+        ap = obs.attack_power(attacker, defender)
+        dp = obs.defense_power(defender, attacker)
         return ap / dp if dp > 0 else 99.0
 
-    def _exposure(self, game, side, unit, defender, enemies) -> int:
+    def _exposure(self, obs, side, unit, defender, enemies) -> int:
         """How many enemies could engage `unit` where the assault leaves it.
 
         Attacking spends all movement and resets entrenchment, so the
@@ -212,33 +263,33 @@ class DoctrineAgent(Agent):
         # sat still, and absorbed the attacks anyway. Exposure is what is
         # left after mutual support.
         support = sum(
-            1 for f in game.units_of(side)
+            1 for f in obs.units_of(side)
             if f.uid != unit.uid and f.stats.can_capture
             and distance(defender.coord, f.coord) <= 2
         )
         return max(0, threats - support)
 
-    def _should_assault(self, game: Game, attacker: Unit, defender: Unit,
+    def _should_assault(self, obs: Observation, attacker: Unit, defender: Unit,
                         enemies=None) -> bool:
-        terrain = game.map.get(defender.coord)
+        terrain = obs.map.get(defender.coord)
         required = RATIO_REQUIRED.get(terrain, 2.0) / max(self.aggression, 0.05)
         required *= 1.0 + 0.15 * defender.entrench
         if enemies:
             # Flank security: every additional enemy that can reach the
             # objective raises the bar for going in.
-            exposure = self._exposure(game, attacker.side, attacker, defender, enemies)
+            exposure = self._exposure(obs, attacker.side, attacker, defender, enemies)
             required *= 1.0 + EXPOSURE_PENALTY * max(0, exposure - 1)
-        return self._local_odds(game, attacker, defender) >= required
+        return self._local_odds(obs, attacker, defender) >= required
 
-    def _engageable(self, game: Game, unit: Unit, enemies: List[Unit]) -> List[Unit]:
+    def _engageable(self, obs: Observation, unit: Unit, enemies: List[Unit]) -> List[Unit]:
         return [e for e in enemies if unit.can_engage(e)]
 
     def _best_target(
-        self, game: Game, unit: Unit, enemies: List[Unit], radius: int = 4
+        self, obs: Observation, unit: Unit, enemies: List[Unit], radius: int = 4
     ) -> Optional[Unit]:
         """Prefer close, weak, and objective-holding enemies."""
         candidates = [
-            e for e in self._engageable(game, unit, enemies)
+            e for e in self._engageable(obs, unit, enemies)
             if distance(unit.coord, e.coord) <= radius
         ]
         if not candidates:
@@ -247,9 +298,9 @@ class DoctrineAgent(Agent):
         def value(e: Unit) -> float:
             score = -distance(unit.coord, e.coord) * 2.0
             score += (100.0 - e.strength) / 25.0          # finish the wounded
-            if e.coord in game.objectives:
-                score += 4.0 * game.objectives[e.coord]   # ground that scores
-            score -= 2.0 * game.map.def_mult(e.coord, e.domain)
+            if e.coord in obs.objectives:
+                score += 4.0 * obs.objectives[e.coord]   # ground that scores
+            score -= 2.0 * obs.map.def_mult(e.coord, e.domain)
             return score
 
         return max(candidates, key=lambda e: (value(e), -e.uid))
@@ -257,7 +308,7 @@ class DoctrineAgent(Agent):
     # -- shared positioning ------------------------------------------------
 
     def _standoff_position(
-        self, game, side, unit, enemies, effect_range, min_standoff,
+        self, obs, side, unit, enemies, effect_range, min_standoff,
         max_span=None, own_air_cover=None,
     ) -> Optional[Coord]:
         """Best hex that keeps `unit` useful but out of contact.
@@ -271,7 +322,7 @@ class DoctrineAgent(Agent):
         Candidates come from a cached hex disc, so this is ~37 hexes at
         radius 3 rather than a sweep of the whole map.
         """
-        engageable = self._engageable(game, unit, enemies)
+        engageable = self._engageable(obs, unit, enemies)
         if not engageable:
             return None
         domain = unit.domain
@@ -283,9 +334,9 @@ class DoctrineAgent(Agent):
         uq, ur = unit.coord
         for dq, dr in disc_offsets(span):
             coord = (uq + dq, ur + dr)
-            if not game.map.passable(coord, domain):
+            if not obs.map.passable(coord, domain):
                 continue
-            occupant = game.unit_at(coord, domain)
+            occupant = obs.unit_at(coord, domain)
             if occupant is not None and occupant.uid != unit.uid:
                 continue
             # Standoff only makes sense against threats you can outrange.
@@ -313,7 +364,7 @@ class DoctrineAgent(Agent):
                 score += AIR_COVER_BONUS
             # Explicit coordinate tie-break: without it the chosen hex
             # depends on enumeration order, so changing how candidates are
-            # generated silently changes every game.
+            # generated silently changes every obs.
             if best is None or score > best_score or (
                 score == best_score and coord < best
             ):
@@ -322,14 +373,14 @@ class DoctrineAgent(Agent):
         return best
 
     def _advance_position(
-        self, game, side, unit, enemies, goal, min_standoff, max_span=None,
+        self, obs, side, unit, enemies, goal, min_standoff, max_span=None,
         avoid: Optional[Set[Coord]] = None,
     ) -> Optional[Coord]:
         """Move toward `goal` without ending the turn inside `min_standoff`.
 
         A screen advances with the main body, it does not race ahead of it.
         Recon moves 9, so an unconstrained MoveTo(objective) put it on the
-        contested hex in a single bound -- which is how it died in every game.
+        contested hex in a single bound -- which is how it died in every obs.
         """
         if goal is None:
             return None
@@ -343,9 +394,9 @@ class DoctrineAgent(Agent):
         uq, ur = unit.coord
         for dq, dr in disc_offsets(span):
             coord = (uq + dq, ur + dr)
-            if not game.map.passable(coord, domain):
+            if not obs.map.passable(coord, domain):
                 continue
-            occupant = game.unit_at(coord, domain)
+            occupant = obs.unit_at(coord, domain)
             if occupant is not None and occupant.uid != unit.uid:
                 continue
             if avoid and coord in avoid:
@@ -361,16 +412,16 @@ class DoctrineAgent(Agent):
                 best = coord
         return best
 
-    def _firing_position(self, game, side, unit, enemies, plan) -> Optional[Coord]:
+    def _firing_position(self, obs, side, unit, enemies, plan) -> Optional[Coord]:
         """Gun line: inside our own reach, outside theirs, and under our own
         air-defence umbrella where one exists."""
         return self._standoff_position(
-            game, side, unit, enemies,
+            obs, side, unit, enemies,
             effect_range=unit.stats.reach, min_standoff=MIN_STANDOFF,
             own_air_cover=plan.own_air_cover,
         )
 
-    def _screen_position(self, game, side, unit, enemies) -> Optional[Coord]:
+    def _screen_position(self, obs, side, unit, enemies) -> Optional[Coord]:
         """Observation post: enemy under observation, at maximum distance.
 
         The standoff is derived from the observation radius rather than being
@@ -383,7 +434,7 @@ class DoctrineAgent(Agent):
         post is 2 hexes from the enemy, which is contact, not observation.
         """
         return self._standoff_position(
-            game, side, unit, enemies,
+            obs, side, unit, enemies,
             effect_range=unit.stats.spot,
             min_standoff=max(RECON_MIN_STANDOFF, unit.stats.spot),
             max_span=RECON_SEARCH_SPAN,
@@ -408,7 +459,7 @@ class DoctrineAgent(Agent):
         ]
         return max(floor, max(reaches) + 1) if reaches else floor
 
-    def _approach_hex(self, game, unit, goal):
+    def _approach_hex(self, obs, unit, goal):
         """Closest hex to `goal` that this unit's domain can actually occupy.
 
         A ship ordered to an inland objective finds no path and falls through
@@ -424,8 +475,8 @@ class DoctrineAgent(Agent):
             return cached
         best = None
         best_d = 10 ** 9
-        for coord in game.map.all_coords():
-            if not game.map.passable(coord, domain):
+        for coord in obs.map.all_coords():
+            if not obs.map.passable(coord, domain):
                 continue
             d = distance(coord, goal)
             if d < best_d or (d == best_d and (best is None or coord < best)):
@@ -438,13 +489,13 @@ class DoctrineAgent(Agent):
         """Furthest any surviving enemy could move in one turn."""
         return max((int(e.stats.move) for e in enemies), default=0)
 
-    def _withdraw(self, game, side, unit, plan) -> Order:
+    def _withdraw(self, obs, side, unit, plan) -> Order:
         """Break contact toward the nearest friendly-held or rear objective."""
-        home_col = 0 if side is Side.BLUE else game.map.width - 1
+        home_col = 0 if side is Side.BLUE else obs.map.width - 1
         rear = None
         best = 1e9
-        for coord in game.objectives:
-            if not game.map.passable(coord, unit.domain):
+        for coord in obs.objectives:
+            if not obs.map.passable(coord, unit.domain):
                 continue
             col = coord[0] + coord[1] // 2
             d = abs(col - home_col)
@@ -455,89 +506,107 @@ class DoctrineAgent(Agent):
 
     # -- role behaviours ---------------------------------------------------
 
-    def _manoeuvre(self, game, side, unit, enemies, plan,
+    def _support(self, obs, side, unit, enemies, plan) -> Order:
+        """Stay near the HQ; a weak unit that cannot take ground has no
+        business at the front."""
+        hq = obs.hq[side]
+        if distance(unit.coord, hq) <= 2:
+            return Hold(unit.uid)
+        return MoveTo(unit.uid, hq)
+
+    def _manoeuvre(self, obs, side, unit, enemies, plan,
                    exploit: bool = True) -> Order:
-        if unit.strength < COMBAT_INEFFECTIVE and game.enemies_adjacent(unit.coord, side):
-            return self._withdraw(game, side, unit, plan)
+        if unit.strength < COMBAT_INEFFECTIVE and obs.enemies_adjacent(unit.coord, side):
+            return self._withdraw(obs, side, unit, plan)
 
         adjacent = [
-            e for e in game.enemies_adjacent(unit.coord, side) if unit.can_engage(e)
+            e for e in obs.enemies_adjacent(unit.coord, side) if unit.can_engage(e)
         ]
         if adjacent:
             target = min(adjacent, key=lambda e: (e.strength, e.uid))
-            if self._should_assault(game, unit, target, enemies):
+            if self._should_assault(obs, unit, target, enemies):
                 return Attack(unit.uid, target.uid)
             return Hold(unit.uid)
 
         radius = 6 if exploit else 4
-        target = self._best_target(game, unit, enemies, radius=radius)
-        if target is not None and self._should_assault(game, unit, target, enemies):
+        target = self._best_target(obs, unit, enemies, radius=radius)
+        if target is not None and self._should_assault(obs, unit, target, enemies):
             return Attack(unit.uid, target.uid)
         if plan.main_effort is not None:
             return MoveTo(unit.uid, plan.main_effort)
         return Hold(unit.uid)
 
-    def _infantry(self, game, side, unit, enemies, plan) -> Order:
-        if unit.strength < COMBAT_INEFFECTIVE and game.enemies_adjacent(unit.coord, side):
-            return self._withdraw(game, side, unit, plan)
+    def _infantry(self, obs, side, unit, enemies, plan) -> Order:
+        if unit.strength < COMBAT_INEFFECTIVE and obs.enemies_adjacent(unit.coord, side):
+            return self._withdraw(obs, side, unit, plan)
 
-        # Hold what we've taken: entrenched infantry on an objective is the
-        # cheapest victory points in the game.
-        if unit.coord in game.objectives:
+        # A capital stays ours once taken (provinces keep their owner), so
+        # infantry holds one only until it flips, or while the enemy is close
+        # enough to retake it -- then moves on to the next one. (Under the
+        # old rules an objective scored only while occupied, so it sat.)
+        if unit.coord in obs.objectives:
             adjacent = [
-                e for e in game.enemies_adjacent(unit.coord, side)
+                e for e in obs.enemies_adjacent(unit.coord, side)
                 if unit.can_engage(e)
             ]
             if adjacent:
                 target = min(adjacent, key=lambda e: (e.strength, e.uid))
-                if self._should_assault(game, unit, target, enemies):
+                if self._should_assault(obs, unit, target, enemies):
                     return Attack(unit.uid, target.uid)
-            return Hold(unit.uid)
+            threatened = any(e.stats.can_capture and distance(e.coord, unit.coord) <= THREAT_RADIUS
+                             for e in enemies)
+            if obs.objective_holder(unit.coord) != side or threatened:
+                return Hold(unit.uid)
 
         unheld = [
-            c for c in game.objectives
-            if game.objective_holder(c) != side
-            and game.map.passable(c, unit.domain)
+            c for c in obs.objectives
+            if obs.objective_holder(c) != side
+            and obs.map.passable(c, unit.domain)
         ]
+        free = [c for c in unheld if c not in plan.claimed] or unheld
         if unheld:
+            # Several units may converge on the main effort (mass for the
+            # assault); other capitals are taken one unit each.
             goal = plan.main_effort if plan.main_effort in unheld else min(
-                unheld, key=lambda c: (distance(unit.coord, c), c)
+                free, key=lambda c: (distance(unit.coord, c), c)
             )
-            occupant = game.unit_at(goal, unit.domain)
+            if goal != plan.main_effort:
+                plan.claimed.add(goal)
+            occupant = obs.unit_at(goal, unit.domain)
             if occupant is not None and occupant.side != side \
                     and unit.can_engage(occupant):
-                if self._should_assault(game, unit, occupant, enemies):
+                if self._should_assault(obs, unit, occupant, enemies):
                     return Attack(unit.uid, occupant.uid)
             return MoveTo(unit.uid, goal)
         return self._manoeuvre(
-            game, side, unit, enemies, plan, exploit=False
+            obs, side, unit, enemies, plan, exploit=False
         )
 
-    def _screen(self, game, side, unit, enemies, plan) -> Order:
+    def _screen(self, obs, side, unit, enemies, plan) -> Order:
         """Screen and find. Recon fights only to finish something crippled.
 
         It used to be ordered straight at the main effort, which is where the
-        enemy is -- with a 0.60 defence coefficient it died in every game.
+        enemy is -- with a 0.60 defence coefficient it died in every obs.
         """
         adjacent = [
-            e for e in game.enemies_adjacent(unit.coord, side) if unit.can_engage(e)
+            e for e in obs.enemies_adjacent(unit.coord, side) if unit.can_engage(e)
         ]
         if adjacent:
             weakest = min(adjacent, key=lambda e: (e.strength, e.uid))
             if weakest.strength < 20.0:
                 return Attack(unit.uid, weakest.uid)
-            post = self._screen_position(game, side, unit, enemies)
+            post = self._screen_position(obs, side, unit, enemies)
             if post is not None and post != unit.coord:
                 return MoveTo(unit.uid, post)
-            return self._withdraw(game, side, unit, plan)
+            return self._withdraw(obs, side, unit, plan)
 
-        post = self._screen_position(game, side, unit, enemies)
+        post = self._screen_position(obs, side, unit, enemies)
         if post is not None:
             return MoveTo(unit.uid, post) if post != unit.coord else Hold(unit.uid)
 
         standoff = max(RECON_MIN_STANDOFF, unit.stats.spot)
         step = self._advance_position(
-            game, side, unit, enemies, plan.main_effort, standoff,
+            obs, side, unit, enemies, plan.main_effort, standoff,
             max_span=RECON_SEARCH_SPAN,
         )
         if step is not None and step != unit.coord:
@@ -546,46 +615,46 @@ class DoctrineAgent(Agent):
         if threats:
             nearest = min(distance(unit.coord, e.coord) for e in threats)
             if nearest < standoff:
-                return self._withdraw(game, side, unit, plan)
+                return self._withdraw(obs, side, unit, plan)
         return Hold(unit.uid)
 
-    def _fires(self, game, side, unit, enemies, plan) -> Order:
+    def _fires(self, obs, side, unit, enemies, plan) -> Order:
         """Artillery and naval gunfire: shoot from a position chosen relative
         to the enemy, not relative to the objective. Positioning on the
         objective is what killed the guns in 30 games out of 30."""
         st = unit.stats
-        engageable = self._engageable(game, unit, enemies)
+        engageable = self._engageable(obs, unit, enemies)
         in_range = [
             e for e in engageable if distance(unit.coord, e.coord) <= st.reach
         ]
         if in_range:
             def priority(e: Unit) -> float:
                 score = (100.0 - e.strength) / 20.0
-                if e.coord in game.objectives:
-                    score += 5.0 * game.objectives[e.coord]
+                if e.coord in obs.objectives:
+                    score += 5.0 * obs.objectives[e.coord]
                 if e.coord == plan.main_effort:
                     score += 6.0
                 return score
 
             threatening = [
-                e for e in game.enemies_adjacent(unit.coord, side)
+                e for e in obs.enemies_adjacent(unit.coord, side)
                 if e.can_engage(unit)
             ]
             if threatening:
-                spot = self._firing_position(game, side, unit, enemies, plan)
+                spot = self._firing_position(obs, side, unit, enemies, plan)
                 if spot is not None:
                     return MoveTo(unit.uid, spot)
-                return self._withdraw(game, side, unit, plan)
+                return self._withdraw(obs, side, unit, plan)
             best = max(in_range, key=lambda e: (priority(e), -e.uid))
             return Bombard(unit.uid, best.coord)
 
-        spot = self._firing_position(game, side, unit, enemies, plan)
+        spot = self._firing_position(obs, side, unit, enemies, plan)
         if spot is not None and spot != unit.coord:
             return MoveTo(unit.uid, spot)
         # Nothing in range and no firing position: close on the objective as
         # far as this domain allows. A ship cannot enter an inland hex, so
-        # MoveTo(objective) silently failed and the frigate idled all game.
-        approach = self._approach_hex(game, unit, plan.main_effort)
+        # MoveTo(objective) silently failed and the frigate idled all obs.
+        approach = self._approach_hex(obs, unit, plan.main_effort)
         if approach is not None and approach != unit.coord:
             firing_distance = max(2, st.reach - ARTY_STANDOFF)
             if distance(unit.coord, approach) > firing_distance or \
@@ -593,7 +662,7 @@ class DoctrineAgent(Agent):
                 return MoveTo(unit.uid, approach)
         return Hold(unit.uid)
 
-    def _air_defence(self, game, side, unit, enemies, plan) -> Order:
+    def _air_defence(self, obs, side, unit, enemies, plan) -> Order:
         """Surface-to-air: the umbrella over the force.
 
         It only engages aircraft, so it has nothing to do about ground
@@ -612,7 +681,7 @@ class DoctrineAgent(Agent):
         # Cover the force. Moving onto the objective is the same mistake the
         # guns used to make: the objective is where the enemy is, and air
         # defence cannot shoot back at ground troops at all.
-        post = self._umbrella_position(game, side, unit, enemies)
+        post = self._umbrella_position(obs, side, unit, enemies)
         if post is not None and post != unit.coord:
             return MoveTo(unit.uid, post)
 
@@ -625,14 +694,14 @@ class DoctrineAgent(Agent):
         ]
         if under_fire:
             step = self._advance_position(
-                game, side, unit, enemies, self._rear_hex(game, side), standoff,
+                obs, side, unit, enemies, self._rear_hex(obs, side), standoff,
             )
             if step is not None and step != unit.coord:
                 return MoveTo(unit.uid, step)
-            return self._withdraw(game, side, unit, plan)
+            return self._withdraw(obs, side, unit, plan)
         return Hold(unit.uid)
 
-    def _umbrella_position(self, game, side, unit, enemies) -> Optional[Coord]:
+    def _umbrella_position(self, obs, side, unit, enemies) -> Optional[Coord]:
         """Where air defence should sit: over its own force, behind the line.
 
         Scores hexes by how many friendlies fall inside `reach`, with a hard
@@ -643,7 +712,7 @@ class DoctrineAgent(Agent):
         # version filtered on `can_capture`, which excluded artillery and
         # other SAM batteries -- precisely the soft, high-value assets an
         # air-defence umbrella exists to protect.
-        friends = [u for u in game.units_of(side) if u.uid != unit.uid]
+        friends = [u for u in obs.units_of(side) if u.uid != unit.uid]
         if not friends:
             return None
         # Weight by how badly a unit needs cover: something that cannot shoot
@@ -666,9 +735,9 @@ class DoctrineAgent(Agent):
         uq, ur = unit.coord
         for dq, dr in disc_offsets(span):
             coord = (uq + dq, ur + dr)
-            if not game.map.passable(coord, domain):
+            if not obs.map.passable(coord, domain):
                 continue
-            occupant = game.unit_at(coord, domain)
+            occupant = obs.unit_at(coord, domain)
             if occupant is not None and occupant.uid != unit.uid:
                 continue
             nearest = min(
@@ -689,7 +758,7 @@ class DoctrineAgent(Agent):
                 best = coord
         return best
 
-    def _air(self, game, side, unit, enemies, plan) -> Order:
+    def _air(self, obs, side, unit, enemies, plan) -> Order:
         """Strike aircraft.
 
         Air ignores terrain and zones of control, which makes it devastating
@@ -699,23 +768,23 @@ class DoctrineAgent(Agent):
         """
         if unit.strength < COMBAT_INEFFECTIVE:
             step = self._advance_position(
-                game, side, unit, enemies,
-                self._rear_hex(game, side), 0,
+                obs, side, unit, enemies,
+                self._rear_hex(obs, side), 0,
                 max_span=AIR_SEARCH_SPAN, avoid=plan.enemy_air_cover,
             )
             if step is not None:
                 return MoveTo(unit.uid, step)
             return Hold(unit.uid)
 
-        engageable = self._engageable(game, unit, enemies)
+        engageable = self._engageable(obs, unit, enemies)
         uncovered = [e for e in engageable if e.coord not in plan.enemy_air_cover]
 
         if engageable:
             def value(e: Unit) -> float:
                 score = -1.5 * distance(unit.coord, e.coord)
                 score += (100.0 - e.strength) / 20.0
-                if e.coord in game.objectives:
-                    score += 4.0 * game.objectives[e.coord]
+                if e.coord in obs.objectives:
+                    score += 4.0 * obs.objectives[e.coord]
                 # Soft, high-value targets are what air is for.
                 score += 3.0 * (1.0 - e.stats.defense)
                 return score
@@ -734,16 +803,16 @@ class DoctrineAgent(Agent):
         # denied objective just runs them dry outside their own supply. The
         # counter to air defence is ground manoeuvre overrunning it, not
         # flying into it.
-        home = self._rear_hex(game, side)
+        home = self._rear_hex(obs, side)
         step = self._advance_position(
-            game, side, unit, enemies, home, 0,
+            obs, side, unit, enemies, home, 0,
             max_span=AIR_SEARCH_SPAN, avoid=plan.enemy_air_cover,
         )
         if step is not None and step != unit.coord:
             return MoveTo(unit.uid, step)
         return Hold(unit.uid)
 
-    def _rear_hex(self, game, side) -> Optional[Coord]:
-        home_col = 0 if side is Side.BLUE else game.map.width - 1
-        row = game.map.height // 2
+    def _rear_hex(self, obs, side) -> Optional[Coord]:
+        home_col = 0 if side is Side.BLUE else obs.map.width - 1
+        row = obs.map.height // 2
         return (home_col - row // 2, row)

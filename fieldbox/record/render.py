@@ -78,8 +78,7 @@ def render(game: "Game", color: bool = True) -> str:
     lines = []
     header = (
         f"Turn {game.turn}/{game.max_turns}   "
-        f"BLUE {game.vp[Side.BLUE]:.0f} VP  |  RED {game.vp[Side.RED]:.0f} VP   "
-        f"(next: {game.current_side.name})"
+        f"BLUE {game.vp[Side.BLUE]:.0f} VP  |  RED {game.vp[Side.RED]:.0f} VP"
     )
     lines.append(header)
     lines.append("-" * len(header))
@@ -107,11 +106,11 @@ def render(game: "Game", color: bool = True) -> str:
         lines.append(indent + " ".join(cells))
 
     lines.append("")
-    lines.append("land I=INF A=TNK M=IFV R=RCN T=ART S=SAM   air H=HEL J=JET   sea N=SHP")
+    lines.append("land I=INF A=TNK M=IFV R=RCN T=ART S=SAM E=ENG   air H=HEL J=JET   sea N=SHP")
     lines.append("uppercase=BLUE  lowercase=RED   number = strength in tenths (10 = full)")
     lines.append("X+Y = two units stacked (one per domain), X+n = n units in the hex")
     lines.append("X!n = OUT OF SUPPLY -- stock draining, combat power falling")
-    lines.append(". plain  f forest  ^ hill  # urban  ~ water  = road  On objective")
+    lines.append(". plain  f forest  ^ hill  % mountain  # urban  ~ water  = road  On capital (value n)")
     return "\n".join(lines)
 
 
@@ -120,7 +119,6 @@ def to_json(game: "Game") -> str:
     payload = {
         "turn": game.turn,
         "max_turns": game.max_turns,
-        "current_side": game.current_side.name,
         "vp": {s.name: v for s, v in game.vp.items()},
         "map": {
             "width": game.map.width,

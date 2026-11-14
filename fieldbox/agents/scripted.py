@@ -10,19 +10,21 @@ import random
 from typing import Dict, List, Optional
 
 from .. import params as P
-from ..sim.engine import Attack, Bombard, Game, Hold, MoveTo, Order
+from ..sim.observation import Observation, UnitView
+from ..sim.orders import Attack, Bombard, Hold, MoveTo, Order
 from ..core.hexgrid import distance
-from ..sim.units import Side, Unit
+from ..sim.units import Side
+Unit = UnitView
 from . import Agent, register
 
 COUNTERATTACK_THRESHOLD = P.COUNTERATTACK_THRESHOLD  # only counterattack an enemy this broken
 
 
-def engageable(game: Game, unit: Unit, side: Side) -> List[Unit]:
-    return [e for e in game.units_of(side.other) if unit.can_engage(e)]
+def engageable(obs: Observation, unit: Unit, side: Side) -> List[Unit]:
+    return [e for e in obs.units_of(side.other) if unit.can_engage(e)]
 
 
-def simple_engage(game: Game, unit: Unit, target: Unit) -> Order:
+def simple_engage(obs: Observation, unit: Unit, target: Unit) -> Order:
     """Bombard if we shoot at range, otherwise close and attack."""
     if unit.stats.indirect:
         if distance(unit.coord, target.coord) <= unit.stats.reach:
@@ -40,11 +42,8 @@ class RandomAgent(Agent):
     def __init__(self, seed: int = 0) -> None:
         self.rng = random.Random(seed)
 
-    def act(self, game: Game, side: Side) -> Dict[int, Order]:
-        return {
-            u.uid: self.rng.choice(game.legal_orders(u))
-            for u in game.units_of(side)
-        }
+    def act(self, obs: Observation) -> List[Order]:
+        return [self.rng.choice(obs.legal_orders(u)) for u in obs.units_of(obs.side)]
 
 
 @register
@@ -55,7 +54,7 @@ class HoldAgent(Agent):
     objective if that is how the distances fall. The first version handed out
     one objective per unit and then ordered everybody else to Hold where they
     stood -- with three objectives and eight units, five of them sat on the
-    deployment line for the whole game, which is why a dug-in defender was
+    deployment line for the whole obs, which is why a dug-in defender was
     losing to random play.
 
     Units that cannot enter an already-occupied objective hex stop adjacent
@@ -65,16 +64,17 @@ class HoldAgent(Agent):
 
     name = "hold"
 
-    def act(self, game: Game, side: Side) -> Dict[int, Order]:
+    def act(self, obs: Observation) -> List[Order]:
+        side = obs.side
         orders: Dict[int, Order] = {}
-        objectives = game.objectives
+        objectives = obs.objectives
         if not objectives:
-            return {u.uid: Hold(u.uid) for u in game.units_of(side)}
+            return [Hold(u.uid) for u in obs.units_of(side)]
 
-        for u in game.units_of(side):
-            targets = engageable(game, u, side)
+        for u in obs.units_of(side):
+            targets = engageable(obs, u, side)
             adjacent = [
-                e for e in game.enemies_adjacent(u.coord, side)
+                e for e in obs.enemies_adjacent(u.coord, side)
                 if u.can_engage(e)
             ]
 
@@ -103,12 +103,12 @@ class HoldAgent(Agent):
                     orders[u.uid] = Hold(u.uid)
                 continue
 
-            goal = _nearest_objective(game, u)
+            goal = _nearest_objective(obs, u)
             if goal is None or u.coord == goal or adjacent:
                 orders[u.uid] = Hold(u.uid)
             else:
                 orders[u.uid] = MoveTo(u.uid, goal)
-        return orders
+        return [orders[k] for k in sorted(orders)]
 
 
 @register
@@ -118,27 +118,28 @@ class RushAgent(Agent):
 
     name = "rush"
 
-    def act(self, game: Game, side: Side) -> Dict[int, Order]:
+    def act(self, obs: Observation) -> List[Order]:
+        side = obs.side
         orders: Dict[int, Order] = {}
-        for u in game.units_of(side):
-            targets = engageable(game, u, side)
+        for u in obs.units_of(side):
+            targets = engageable(obs, u, side)
             if not targets:
                 orders[u.uid] = Hold(u.uid)
                 continue
             nearest = min(targets, key=lambda e: (distance(u.coord, e.coord), e.uid))
-            orders[u.uid] = simple_engage(game, u, nearest)
-        return orders
+            orders[u.uid] = simple_engage(obs, u, nearest)
+        return [orders[k] for k in sorted(orders)]
 
 
-def _nearest_objective(game: Game, unit: Unit) -> Optional[tuple]:
+def _nearest_objective(obs: Observation, unit: Unit) -> Optional[tuple]:
     """Closest objective this unit's domain can actually reach."""
     reachable = [
-        c for c in game.objectives
-        if game.map.passable(c, unit.domain)
+        c for c in obs.objectives
+        if obs.map.passable(c, unit.domain)
     ]
     if not reachable:
         return None
     return min(
         reachable,
-        key=lambda c: (distance(unit.coord, c), -game.objectives[c], c),
+        key=lambda c: (distance(unit.coord, c), -obs.objectives[c], c),
     )

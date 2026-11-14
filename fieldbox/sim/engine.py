@@ -1,87 +1,44 @@
-"""Game state and turn resolution.
+"""Game state and simultaneous (WEGO) turn resolution (PLAN.md §3.5).
 
 Design notes
 ------------
-* Strictly deterministic: every random draw comes from `self.rng`, seeded once.
-  Same seed + same policies => byte-identical game.
-* IGOUGO turn order (BLUE acts, then RED). One order per unit per turn, which
-  keeps the action space small enough for RL to have a chance.
-* `Attack` implies move-to-contact, so agents issue intent, not micro.
-* **Stacking is per domain.** A hex holds at most one land unit, one air unit
-  and one sea unit. Without this, a helicopter parked on a hex would block a
-  tank, and air power would just be fast ground power.
+* Both sides order, then everything resolves at once. `step_turn` takes
+  `{Side: [orders]}` and runs the phases in a fixed order.
+* Strictly deterministic. Each random stream is derived from the game seed
+  and the turn (`make_rng(seed, "move", turn)` and so on), so no phase can
+  disturb another's draws.
+* No BLUE/RED bias: movement order is a seeded shuffle, all combat losses
+  are computed from the same pre-combat state and applied together, and
+  ties for an emptied hex are settled by another seeded shuffle.
+* Stacking is per domain: a hex holds at most one land, one air and one sea
+  unit.
 * The engine contains no unit-type branches. Everything a unit may do comes
-  from `UnitStats` -- domain, `targets`, `can_capture`, `entrenches`. Adding
-  a unit type must never mean editing this file.
+  from `UnitStats` -- domain, `targets`, `reach`, `can_capture`,
+  `entrenches`.
+* M3 scope: no structures, economy or command points. Supply sources are
+  the start positions (land/air: HQ; sea: water next to the start port).
 """
 
 from __future__ import annotations
 
-import random
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .. import params as P
-from ..core.hexgrid import Coord, Domain, HexMap, distance, neighbors
-from .supply import (
-    DRAIN_RATE,
-    REPAIR_CAP,
-    REPAIR_RATE,
-    RESUPPLY_RATE,
-    STARVATION_LOSS,
-    SUPPLY_EFFECTIVE,
-    SUPPLY_MAX,
-    depot_hexes,
-    interdicted,
-    supply_factor,
-    trace_network,
-)
-from .units import (
-    ATTACK_TERRAIN_MOD,
-    ENTRENCH_BONUS,
-    MAX_ENTRENCH,
-    NO_RETURN_FIRE_MULT,
-    Side,
-    Unit,
-)
+from ..core.hexgrid import IMPASSABLE, Coord, Domain, HexMap, Terrain, distance, neighbors
+from ..core.rng import make_rng
+from . import combat as C
+from . import events as E
+from .events import Event
+from .orders import ORDER_TYPES, Attack, Bombard, Hold, MoveTo, Order
+from .supply import (DRAIN_RATE, REPAIR_CAP, REPAIR_RATE, RESUPPLY_RATE,
+                     STARVATION_LOSS, SUPPLY_EFFECTIVE, SUPPLY_MAX, interdicted,
+                     trace_network)
+from .units import MAX_ENTRENCH, Side, Unit, UnitType
 
-# --- Orders ---------------------------------------------------------------
+# Re-exported so older imports (`from fieldbox.sim.engine import Hold`) work.
+__all__ = ["Game", "CombatResult", "Hold", "MoveTo", "Attack", "Bombard", "Order"]
 
-
-@dataclass(frozen=True)
-class Hold:
-    uid: int
-
-
-@dataclass(frozen=True)
-class MoveTo:
-    uid: int
-    dest: Coord
-
-
-@dataclass(frozen=True)
-class Attack:
-    """Close with `target` (pathing to an adjacent hex) and engage."""
-    uid: int
-    target: int
-
-
-@dataclass(frozen=True)
-class Bombard:
-    """Engage at range. No return fire, but only within `reach`."""
-    uid: int
-    dest: Coord
-
-
-Order = object  # one of the four above
-
-# --- Combat tuning --------------------------------------------------------
-
-BASE_LOSS = P.COMBAT.base_loss      # percentage points lost at even odds
-MIN_LOSS = P.COMBAT.min_loss
-MAX_LOSS = P.COMBAT.max_loss
-FLANK_BONUS = P.COMBAT.flank_bonus  # per additional friendly unit adjacent to the target
-# Per-unit ranged effectiveness now lives in UnitStats.fire_coef.
+JITTER_LO, JITTER_SPAN = 0.80, 0.40      # combat jitter is uniform in [0.8, 1.2]
 
 
 @dataclass
@@ -95,48 +52,47 @@ class CombatResult:
 
 
 class Game:
-    """A single match. Cheap to construct, cheap to step."""
+    """One match on a generated world."""
 
-    def __init__(self, scenario, seed: int = 0) -> None:
-        self.scenario = scenario
-        self.map: HexMap = scenario.build_map()
-        self.rng = random.Random(seed)
+    def __init__(self, world, seed: int = 0, max_turns: Optional[int] = None) -> None:
+        self.world = world
+        self.map: HexMap = world.hexmap
         self.seed = seed
         self.turn = 0
-        self.max_turns = scenario.max_turns
-        self.current_side = Side.BLUE
-        self.objectives: Dict[Coord, int] = dict(scenario.objectives)
-        self.units: Dict[int, Unit] = {u.uid: u.clone() for u in scenario.build_units()}
-        # (coord -> domain -> unit). unit_at() runs thousands of times a turn,
-        # so this index is what keeps the step cost flat.
+        self.max_turns = max_turns if max_turns is not None else world.params.match.max_turns
+        # uids interleave the sides (BLUE 0, RED 1, BLUE 2, ...): world.units
+        # lists BLUE's units, then their mirrors in the same order.
+        self.units: Dict[int, Unit] = {}
+        half = len(world.units) // 2
+        for i, pu in enumerate(world.units):
+            uid = 2 * i if i < half else 2 * (i - half) + 1
+            self.units[uid] = Unit(uid, pu.side, UnitType[pu.kind], pu.coord[0], pu.coord[1])
+        self.units = dict(sorted(self.units.items()))
         self._by_coord: Dict[Coord, Dict[Domain, Unit]] = {}
         for u in self.units.values():
             self._by_coord.setdefault(u.coord, {})[u.domain] = u
+        self.owner = dict(world.owner)                     # province id -> Side | None
+        self.capitals: Dict[Coord, int] = {p.capital: p.id for p in world.provinces}
         self.vp: Dict[Side, float] = {Side.BLUE: 0.0, Side.RED: 0.0}
-        self.log: List[str] = []
+        self.standing: Dict[int, Order] = {}
+        self.events: List[Event] = []
         self.combat_log: List[CombatResult] = []
-        # coord sets that each side can currently trace supply to, per domain
+        self.result: Optional[Tuple[Optional[Side], str]] = None
+        self.hq: Dict[Side, Coord] = dict(world.hq)
         self.supply_net: Dict[Side, Dict[Domain, set]] = {}
-        self._depot_cache: Dict[tuple, List[Coord]] = {}
-        # Air and sea supply is not interdicted by ground, so those networks
-        # depend only on the static map and never change during a game.
-        # Retracing them every turn was two thirds of the supply cost.
+        self._depots = self._make_depots()
         self._static_net: Dict[tuple, set] = {}
         for s in (Side.BLUE, Side.RED):
-            self._update_supply(s)
-        self._refresh_moves(self.current_side)
+            self._update_supply(s, emit=False)
 
-    # -- helpers ---------------------------------------------------------
+    # -- queries ----------------------------------------------------------
 
     def units_of(self, side: Side) -> List[Unit]:
         return [u for u in self.units.values() if u.side == side and u.alive]
 
     def unit_at(self, coord: Coord, domain: Optional[Domain] = None) -> Optional[Unit]:
-        """The unit in `domain` at `coord`.
-
-        With no domain, returns the land unit if there is one -- ground truth
-        for "who holds this hex" -- falling back to whatever else is there.
-        """
+        """The unit in `domain` at `coord`; with no domain, the land unit if
+        there is one, else whatever else is there."""
         stack = self._by_coord.get(coord)
         if not stack:
             return None
@@ -150,225 +106,368 @@ class Game:
     def units_at(self, coord: Coord) -> List[Unit]:
         return list(self._by_coord.get(coord, {}).values())
 
-    def occupied(
-        self, domain: Domain, exclude: Optional[int] = None
-    ) -> frozenset:
-        """Hexes a unit of `domain` may not enter."""
-        return frozenset(
-            c for c, stack in self._by_coord.items()
-            if domain in stack and stack[domain].uid != exclude
-        )
+    def occupied(self, domain: Domain, exclude: Optional[int] = None) -> frozenset:
+        return frozenset(c for c, stack in self._by_coord.items()
+                         if domain in stack and stack[domain].uid != exclude)
 
-    def enemies_adjacent(
-        self, coord: Coord, side: Side, domain: Optional[Domain] = None
-    ) -> List[Unit]:
-        """Adjacent enemies, optionally restricted to one domain.
-
-        Zone of control uses the domain filter: ground troops cannot stop a
-        helicopter, and nothing on land exerts ZOC over open water.
-        """
+    def enemies_adjacent(self, coord: Coord, side: Side,
+                         domain: Optional[Domain] = None) -> List[Unit]:
         out = []
         get = self._by_coord.get
         for n in neighbors(*coord):
             stack = get(n)
-            if not stack:
-                continue
-            for d, u in stack.items():
-                if u.side != side and (domain is None or d is domain):
-                    out.append(u)
+            if stack:
+                for d, u in stack.items():
+                    if u.side != side and (domain is None or d is domain):
+                        out.append(u)
         return out
 
     @property
+    def objectives(self) -> Dict[Coord, int]:
+        """Province capitals and their values (what agents fight over)."""
+        return {p.capital: p.value for p in self.world.provinces}
+
+    def objective_holder(self, coord: Coord) -> Optional[Side]:
+        """Owner of the province whose capital is `coord`."""
+        pid = self.capitals.get(coord)
+        return None if pid is None else self.owner.get(pid)
+
+    @property
     def is_over(self) -> bool:
-        if self.turn >= self.max_turns:
-            return True
-        return not self.units_of(Side.BLUE) or not self.units_of(Side.RED)
+        return self.result is not None
 
     def winner(self) -> Optional[Side]:
-        if not self.is_over:
-            return None
-        blue, red = self.units_of(Side.BLUE), self.units_of(Side.RED)
-        if not blue and red:
-            return Side.RED
-        if not red and blue:
-            return Side.BLUE
-        if self.vp[Side.BLUE] > self.vp[Side.RED]:
-            return Side.BLUE
-        if self.vp[Side.RED] > self.vp[Side.BLUE]:
-            return Side.RED
-        return None  # draw
+        return self.result[0] if self.result else None
 
-    # -- legal actions (for RL wrappers and sanity checks) ----------------
+    def observe(self, side: Side):
+        from .observation import Observation
+        return Observation.from_game(self, side)
 
-    def legal_orders(self, unit: Unit) -> List[Order]:
+    def legal_orders(self, unit) -> List[Order]:
         orders: List[Order] = [Hold(unit.uid)]
         st = unit.stats
-        enemies = [u for u in self.units.values() if u.alive and u.side != unit.side]
-        engageable = [e for e in enemies if e.domain in st.targets]
-        if st.indirect:
-            for e in engageable:
+        for e in self.units.values():
+            if e.side == unit.side or not unit.can_engage(e):
+                continue
+            if st.indirect:
                 if distance(unit.coord, e.coord) <= st.reach:
                     orders.append(Bombard(unit.uid, e.coord))
-        else:
-            for e in engageable:
+            else:
                 orders.append(Attack(unit.uid, e.uid))
         for coord in self.objectives:
             if self.map.passable(coord, st.domain):
                 orders.append(MoveTo(unit.uid, coord))
         return orders
 
-    # -- turn resolution --------------------------------------------------
+    # -- the turn ---------------------------------------------------------
 
-    # -- logistics --------------------------------------------------------
+    def step_turn(self, orders: Dict[Side, List[Order]]) -> List[Event]:
+        """Resolve one simultaneous turn. Returns the events it produced."""
+        if self.is_over:
+            return []
+        start = len(self.events)
+        self._phase_orders(orders)
+        self._phase_movement()
+        self._phase_combat()
+        self._phase_captures()
+        self._phase_logistics()
+        self._phase_score()
+        self._emit(E.TURN_END)
+        self.turn += 1
+        return self.events[start:]
 
-    def _depots(self, side: Side, domain: Domain) -> List[Coord]:
-        key = (side, domain)
-        cached = self._depot_cache.get(key)
-        if cached is None:
-            home = 0 if side is Side.BLUE else self.map.width - 1
-            cached = depot_hexes(self.map, home, domain)
-            self._depot_cache[key] = cached
-        return cached
+    def _emit(self, kind: str, side: Optional[Side] = None, **data) -> None:
+        self.events.append(Event(self.turn, kind, None if side is None else int(side), data))
 
-    def _update_supply(self, side: Side) -> None:
-        """Retrace the supply network and flag every unit in or out of it.
+    # 1. orders ------------------------------------------------------------
 
-        Once per side per turn, never per unit -- per-unit tracing is what
-        makes supply models slow.
-        """
+    def _illegal(self, o, side: Side) -> Optional[str]:
+        if not isinstance(o, ORDER_TYPES):
+            return "unknown order type"
+        u = self.units.get(o.uid)
+        if u is None or u.side != side:
+            return "no such unit"
+        if isinstance(o, MoveTo):
+            if not self.map.in_bounds(o.dest) or not self.map.passable(o.dest, u.domain):
+                return "destination impassable"
+        elif isinstance(o, Attack):
+            t = self.units.get(o.target)
+            if t is None or t.side == side:
+                return "no such enemy"
+            if not u.can_engage(t):
+                return "cannot engage that domain"
+        elif isinstance(o, Bombard):
+            if not u.stats.indirect:
+                return "not a ranged unit"
+            if not self.map.in_bounds(o.dest):
+                return "off the map"
+        return None
+
+    def _phase_orders(self, orders: Dict[Side, List[Order]]) -> None:
+        for side in (Side.BLUE, Side.RED):
+            seen = set()
+            for o in orders.get(side, ()) or ():
+                reason = self._illegal(o, side)
+                if reason is None and o.uid in seen:
+                    reason = "second order for the unit"
+                if reason is not None:
+                    self._emit(E.ORDER_REJECTED, side, uid=getattr(o, "uid", None),
+                               order=repr(o), reason=reason)
+                    continue
+                seen.add(o.uid)
+                self.standing[o.uid] = o
+
+    # 2. movement ----------------------------------------------------------
+
+    def _phase_movement(self) -> None:
+        plans: Dict[int, List[Coord]] = {}
+        for uid in sorted(self.standing):
+            u = self.units.get(uid)
+            o = self.standing[uid]
+            if u is None:
+                continue
+            path = None
+            if isinstance(o, MoveTo) and u.coord != o.dest:
+                path = self.map.find_path(u.coord, o.dest,
+                                          self.occupied(u.domain, exclude=uid), u.domain)
+            elif isinstance(o, Attack):
+                t = self.units.get(o.target)
+                if t is not None and distance(u.coord, t.coord) > 1:
+                    path = self.map.find_path(u.coord, t.coord,
+                                              self.occupied(u.domain, exclude=uid), u.domain)
+                    path = path[:-1] if path else None      # stop adjacent
+            if path:
+                plans[uid] = path
+                u.moves_left = u.stats.move
+
+        # Units that hold this turn dig in.
+        for uid in sorted(self.standing):
+            u = self.units.get(uid)
+            if u is not None and isinstance(self.standing[uid], Hold) and u.stats.entrenches:
+                u.entrench = min(MAX_ENTRENCH, u.entrench + 1)
+
+        order = sorted(plans)
+        make_rng(self.seed, "move", self.turn).shuffle(order)
+        walked: Dict[int, List[Coord]] = {uid: [] for uid in order}
+        start = {uid: self.units[uid].coord for uid in order}
+        active = list(order)
+        while active:                        # one step per unit per impulse
+            still = []
+            for uid in active:
+                u = self.units[uid]
+                path = plans[uid]
+                step = path[len(walked[uid])]
+                cost = self.map.move_cost(step, u.domain)
+                if cost >= IMPASSABLE or cost > u.moves_left or \
+                        self.unit_at(step, u.domain) is not None:
+                    continue                 # refused: stops for the turn
+                u.moves_left -= cost
+                self._set_pos(u, step)
+                u.entrench = 0
+                walked[uid].append(step)
+                if len(walked[uid]) == len(path):
+                    continue
+                if self.enemies_adjacent(step, u.side, u.domain):
+                    continue                 # entered enemy ZOC: movement ends
+                still.append(uid)
+            active = still
+        for uid in order:
+            if walked[uid]:
+                u = self.units[uid]
+                self._emit(E.MOVED, u.side, uid=uid, path=[list(start[uid])] + [list(c) for c in walked[uid]])
+        for uid, o in list(self.standing.items()):
+            if isinstance(o, MoveTo) and uid in self.units and self.units[uid].coord == o.dest:
+                self.standing[uid] = Hold(uid)
+
+    # 3. combat ------------------------------------------------------------
+
+    def _target_at(self, unit: Unit, coord: Coord) -> Optional[Unit]:
+        stack = self._by_coord.get(coord, {})
+        for d in (Domain.LAND, Domain.SEA, Domain.AIR):
+            t = stack.get(d)
+            if t is not None and t.side != unit.side and unit.can_engage(t):
+                return t
+        return None
+
+    def _supporting(self, attacker: Unit, defender: Unit) -> int:
+        n_sup = 0
+        for n in neighbors(*defender.coord):
+            for u in self._by_coord.get(n, {}).values():
+                if u.side == attacker.side and u.uid != attacker.uid and u.can_engage(defender):
+                    n_sup += 1
+        return n_sup
+
+    def _phase_combat(self) -> None:
+        engagements: List[Tuple[Unit, Unit, str]] = []
+        for uid in sorted(self.standing):
+            u = self.units.get(uid)
+            o = self.standing[uid]
+            if u is None:
+                continue
+            if isinstance(o, Attack):
+                t = self.units.get(o.target)
+                if t is not None and distance(u.coord, t.coord) == 1 and u.can_engage(t):
+                    engagements.append((u, t, "assault"))
+            elif isinstance(o, Bombard) and distance(u.coord, o.dest) <= u.stats.reach:
+                t = self._target_at(u, o.dest)
+                if t is not None:
+                    engagements.append((u, t, "fire"))
+        # Air defence fires on its own when it has nothing else to do.
+        for u in list(self.units.values()):
+            st = u.stats
+            o = self.standing.get(u.uid)
+            if st.indirect and st.targets == frozenset({Domain.AIR}) and \
+                    (o is None or isinstance(o, Hold)):
+                air = [e for e in self.units.values() if e.side != u.side
+                       and e.domain is Domain.AIR and distance(u.coord, e.coord) <= st.reach]
+                if air:
+                    engagements.append((u, max(air, key=lambda e: (e.strength, -e.uid)), "fire"))
+        if not engagements:
+            return
+
+        rng = make_rng(self.seed, "combat", self.turn)
+        loss: Dict[int, float] = {}
+        cost: Dict[int, float] = {}
+        assaults: List[Tuple[Unit, Unit]] = []
+        for a, d, kind in engagements:       # all from pre-combat state
+            if kind == "assault":
+                ap = C.attack_power(a, d, self.map, self._supporting(a, d))
+                dp = C.defense_power(d, self.map, a)
+                odds = ap / dp
+                jd = JITTER_LO + JITTER_SPAN * rng.random()
+                ja = JITTER_LO + JITTER_SPAN * rng.random()
+                dl, al = C.assault_losses(odds, jd, ja)
+                assaults.append((a, d))
+            else:
+                odds = C.fire_power(a) / C.defense_power(d, self.map)
+                dl, al = C.fire_loss(odds, JITTER_LO + JITTER_SPAN * rng.random()), 0.0
+            loss[d.uid] = loss.get(d.uid, 0.0) + dl
+            loss[a.uid] = loss.get(a.uid, 0.0) + al
+            cost[a.uid] = cost.get(a.uid, 0.0) + a.stats.combat_cost
+            self._emit(E.ENGAGED, a.side, attacker=a.uid, defender=d.uid, mode=kind,
+                       odds=round(odds, 6), attacker_loss=round(al, 6), defender_loss=round(dl, 6))
+            self.combat_log.append(CombatResult(a.uid, d.uid, odds, al, dl, False))
+        for a, d, kind in engagements:
+            if kind == "assault":
+                a.entrench = 0
+        for uid in sorted(loss):
+            self.units[uid].strength -= loss[uid]
+        for uid in sorted(cost):
+            u = self.units[uid]
+            u.supply = max(0.0, u.supply - cost[uid])
+        dead = [u for u in self.units.values() if u.strength <= 0.0]
+        dead_ids = {u.uid for u in dead}
+        for cr in self.combat_log[-len(engagements):]:
+            cr.defender_destroyed = cr.defender in dead_ids
+        freed = {u.uid: u.coord for u in dead}
+        for u in dead:
+            self._kill(u, "combat")
+        # Take the ground: a surviving assaulter may advance into the hex it
+        # emptied. Competing claims are settled by a seeded shuffle.
+        claims = [(a, freed[d.uid]) for a, d in assaults if d.uid in freed and a.uid not in dead_ids]
+        claims.sort(key=lambda x: x[0].uid)
+        make_rng(self.seed, "occupy", self.turn).shuffle(claims)
+        for a, hex_ in claims:
+            if self._can_occupy(a, hex_):
+                old = a.coord
+                self._set_pos(a, hex_)
+                self._emit(E.MOVED, a.side, uid=a.uid, path=[list(old), list(hex_)], advance=True)
+        # Orders against dead targets are finished.
+        for uid, o in list(self.standing.items()):
+            if uid not in self.units:
+                del self.standing[uid]
+            elif isinstance(o, Attack) and o.target not in self.units:
+                del self.standing[uid]
+            elif isinstance(o, Bombard) and self._target_at(self.units[uid], o.dest) is None:
+                del self.standing[uid]
+
+    def _can_occupy(self, unit: Unit, coord: Coord) -> bool:
+        if not self.map.passable(coord, unit.domain):
+            return False
+        stack = self._by_coord.get(coord)
+        return not (stack and unit.domain in stack)
+
+    # 4. captures ----------------------------------------------------------
+
+    def _phase_captures(self) -> None:
+        for p in self.world.provinces:
+            holder = self.unit_at(p.capital, Domain.LAND)
+            if holder is not None and holder.stats.can_capture and self.owner[p.id] != holder.side:
+                prev = self.owner[p.id]
+                self.owner[p.id] = holder.side
+                self._emit(E.PROVINCE_FLIPPED, holder.side, province=p.id,
+                           previous=None if prev is None else int(prev))
+
+    # 5. logistics ---------------------------------------------------------
+
+    def _make_depots(self) -> Dict[Tuple[Side, Domain], List[Coord]]:
+        t = self.map.terrain
+        out = {}
+        for side in (Side.BLUE, Side.RED):
+            hq = self.hq[side]
+            ports = [s.coord for s in self.world.structures if s.side is side and s.kind == "PORT"]
+            sea = sorted({n for p in ports for n in neighbors(*p) if t.get(n) is Terrain.WATER})
+            out[(side, Domain.LAND)] = [hq]
+            out[(side, Domain.AIR)] = [hq]
+            out[(side, Domain.SEA)] = sea
+        return out
+
+    def _update_supply(self, side: Side, emit: bool = True) -> None:
         nets: Dict[Domain, set] = {}
         for domain in Domain:
             if domain is Domain.LAND:
-                nets[domain] = trace_network(
-                    self.map, self._depots(side, domain), domain,
-                    interdicted(self, side),
-                )
+                nets[domain] = trace_network(self.map, self._depots[(side, domain)], domain,
+                                             interdicted(self, side))
                 continue
             key = (side, domain)
-            cached = self._static_net.get(key)
-            if cached is None:
-                cached = trace_network(
-                    self.map, self._depots(side, domain), domain,
-                )
-                self._static_net[key] = cached
-            nets[domain] = cached
+            if key not in self._static_net:     # air/sea are not interdicted by ground
+                self._static_net[key] = trace_network(self.map, self._depots[key], domain)
+            nets[domain] = self._static_net[key]
         self.supply_net[side] = nets
         for u in self.units_of(side):
+            was = u.in_supply
             u.in_supply = u.coord in nets[u.domain]
+            if emit and was and not u.in_supply:
+                self._emit(E.SUPPLY_CUT, side, uid=u.uid)
 
-    def _run_logistics(self, side: Side) -> None:
-        """End-of-turn upkeep: replenish, drain, starve, repair."""
-        for u in list(self.units_of(side)):
-            st = u.stats
-            if u.in_supply:
-                u.supply = min(SUPPLY_MAX, u.supply + RESUPPLY_RATE - st.upkeep)
-                # Units in contact are busy fighting, not refitting.
-                if u.supply > SUPPLY_EFFECTIVE and \
-                        not self.enemies_adjacent(u.coord, side):
-                    u.strength = min(REPAIR_CAP, u.strength + REPAIR_RATE)
-            else:
-                u.supply -= DRAIN_RATE + st.upkeep
-                if u.supply <= 0.0:
-                    u.supply = 0.0
-                    u.strength -= STARVATION_LOSS
-                    if u.strength <= 0.0:
-                        self._kill(u)
+    def _phase_logistics(self) -> None:
+        for side in (Side.BLUE, Side.RED):
+            self._update_supply(side)
+        for side in (Side.BLUE, Side.RED):
+            for u in self.units_of(side):
+                st = u.stats
+                if u.in_supply:
+                    u.supply = min(SUPPLY_MAX, u.supply + RESUPPLY_RATE - st.upkeep)
+                    if u.supply > SUPPLY_EFFECTIVE and not self.enemies_adjacent(u.coord, side):
+                        u.strength = min(REPAIR_CAP, u.strength + REPAIR_RATE)
+                else:
+                    u.supply -= DRAIN_RATE + st.upkeep
+                    if u.supply <= 0.0:
+                        u.supply = 0.0
+                        u.strength -= STARVATION_LOSS
+                        if u.strength <= 0.0:
+                            self._kill(u, "starvation")
 
-    def _refresh_moves(self, side: Side) -> None:
-        for u in self.units_of(side):
-            u.moves_left = u.stats.move
+    # 7. scoring and victory -------------------------------------------------
 
-    def step(self, orders: Dict[int, Order]) -> None:
-        """Execute one side's turn. `orders` maps unit id -> order."""
-        side = self.current_side
-        # Sorted for determinism: dict order must never influence the result.
-        for uid in sorted(orders.keys()):
-            unit = self.units.get(uid)
-            if unit is None or not unit.alive or unit.side != side:
-                continue
-            self._execute(unit, orders[uid])
+    def _phase_score(self) -> None:
+        for p in self.world.provinces:
+            own = self.owner.get(p.id)
+            if own is not None:
+                self.vp[own] += p.value
+        blue, red = self.units_of(Side.BLUE), self.units_of(Side.RED)
+        if not blue or not red:
+            winner = Side.BLUE if blue else Side.RED if red else None
+            self.result = (winner, "annihilation")
+        elif self.turn + 1 >= self.max_turns:
+            b, r = self.vp[Side.BLUE], self.vp[Side.RED]
+            self.result = (Side.BLUE if b > r else Side.RED if r > b else None, "turn_limit")
+        if self.result is not None:
+            w = self.result[0]
+            self._emit(E.GAME_OVER, w, winner=None if w is None else w.name, cause=self.result[1],
+                       vp_blue=self.vp[Side.BLUE], vp_red=self.vp[Side.RED])
 
-        self._score_objectives(side)
-        self._run_logistics(side)
-        self.current_side = side.other
-        if self.current_side is Side.BLUE:
-            self.turn += 1
-        # Retrace for the side about to act, so agents see current state.
-        self._update_supply(self.current_side)
-        self._refresh_moves(self.current_side)
-
-    def _execute(self, unit: Unit, order: Order) -> None:
-        if isinstance(order, Hold):
-            if unit.stats.entrenches:
-                unit.entrench = min(MAX_ENTRENCH, unit.entrench + 1)
-            unit.moves_left = 0.0
-        elif isinstance(order, MoveTo):
-            self._move_toward(unit, order.dest)
-        elif isinstance(order, Attack):
-            target = self.units.get(order.target)
-            if target is None or not target.alive or target.side == unit.side:
-                return
-            if not unit.can_engage(target):
-                return          # wrong domain: the order is simply illegal
-            if distance(unit.coord, target.coord) > 1:
-                self._move_adjacent_to(unit, target.coord)
-            if distance(unit.coord, target.coord) == 1:
-                self.resolve_attack(unit, target)
-        elif isinstance(order, Bombard):
-            self._bombard(unit, order.dest)
-
-    def _move_toward(self, unit: Unit, dest: Coord) -> None:
-        if unit.coord == dest:
-            if unit.stats.entrenches:
-                unit.entrench = min(MAX_ENTRENCH, unit.entrench + 1)
-            return
-        domain = unit.domain
-        path = self.map.find_path(
-            unit.coord, dest, self.occupied(domain, exclude=unit.uid), domain
-        )
-        if not path:
-            return
-        self._walk(unit, path)
-
-    def _move_adjacent_to(self, unit: Unit, target: Coord) -> None:
-        """Close to contact with `target`.
-
-        Path all the way to the target hex, then drop the last step: the
-        second-to-last hex on the cheapest route is by construction the
-        cheapest adjacent approach. One search instead of six.
-        """
-        domain = unit.domain
-        blocked = self.occupied(domain, exclude=unit.uid)
-        path = self.map.find_path(unit.coord, target, blocked, domain)
-        if path:
-            self._walk(unit, path[:-1])
-
-    def _walk(self, unit: Unit, path: Iterable[Coord]) -> None:
-        """Spend movement points along a path.
-
-        Zone of control: entering a hex adjacent to a living enemy *of the
-        same domain* ends movement. Cheap rule, huge tactical payoff -- it
-        makes screens, flank security and delaying actions meaningful -- and
-        restricting it by domain is what stops infantry from halting jets.
-        """
-        domain = unit.domain
-        moved = False
-        for coord in path:
-            cost = self.map.move_cost(coord, domain)
-            if cost > unit.moves_left:
-                break
-            stack = self._by_coord.get(coord)
-            if stack and domain in stack:
-                break
-            unit.moves_left -= cost
-            self._set_pos(unit, coord)
-            moved = True
-            if self.enemies_adjacent(coord, unit.side, domain):
-                break
-        if moved:
-            unit.entrench = 0
-
-    # -- position bookkeeping (single source of truth for the index) ------
+    # -- position bookkeeping -------------------------------------------------
 
     def _set_pos(self, unit: Unit, coord: Coord) -> None:
         old = self._by_coord.get(unit.coord)
@@ -380,11 +479,10 @@ class Game:
         self._by_coord.setdefault(coord, {})[unit.domain] = unit
 
     def place(self, unit: Unit, coord: Coord) -> None:
-        """Public: move a unit and keep the index in sync. Assigning to
-        `unit.q` / `unit.r` directly will corrupt lookups -- use this."""
+        """Move a unit and keep the position index in sync (tests, tools)."""
         self._set_pos(unit, coord)
 
-    def _kill(self, unit: Unit) -> None:
+    def _kill(self, unit: Unit, cause: str) -> None:
         unit.strength = 0.0
         stack = self._by_coord.get(unit.coord)
         if stack is not None and stack.get(unit.domain) is unit:
@@ -392,151 +490,5 @@ class Game:
             if not stack:
                 del self._by_coord[unit.coord]
         self.units.pop(unit.uid, None)
-
-    # -- combat -----------------------------------------------------------
-
-    def _attack_power(self, attacker: Unit, defender: Unit) -> float:
-        st = attacker.stats
-        terrain = self.map.get(defender.coord)
-        mod = ATTACK_TERRAIN_MOD[attacker.utype].get(terrain, 1.0)
-        power = (attacker.strength / 100.0) * st.attack * mod
-        power *= supply_factor(attacker.supply)
-        # Concentration bonus: other friendlies already in contact.
-        supporting = 0
-        for n in neighbors(*defender.coord):
-            for u in self._by_coord.get(n, {}).values():
-                if u.side == attacker.side and u.uid != attacker.uid and \
-                        u.can_engage(defender):
-                    supporting += 1
-        return power * (1.0 + FLANK_BONUS * supporting)
-
-    def _defense_power(self, defender: Unit, attacker: Optional[Unit] = None) -> float:
-        st = defender.stats
-        terr_mult = self.map.def_mult(defender.coord, st.domain)
-        ent = 1.0 + ENTRENCH_BONUS * defender.entrench
-        power = (defender.strength / 100.0) * st.defense * terr_mult * ent
-        # Defence suffers less than attack: dug-in troops short of ammunition
-        # still hold ground, they just cannot counterattack.
-        power *= 0.5 * (1.0 + supply_factor(defender.supply))
-        if attacker is not None and not defender.can_engage(attacker):
-            # It cannot shoot back at this attacker's domain. Not helpless,
-            # but badly placed -- otherwise air power costs nothing at all.
-            power *= NO_RETURN_FIRE_MULT
-        return max(power, 1e-6)
-
-    def resolve_attack(self, attacker: Unit, defender: Unit) -> CombatResult:
-        ap = self._attack_power(attacker, defender)
-        dp = self._defense_power(defender, attacker)
-        odds = ap / dp
-
-        jitter_d = 0.80 + 0.40 * self.rng.random()
-        jitter_a = 0.80 + 0.40 * self.rng.random()
-        def_loss = _clamp(BASE_LOSS * (odds ** 0.70) * jitter_d)
-        att_loss = _clamp(BASE_LOSS * (odds ** -0.50) * jitter_a)
-
-        defender.strength -= def_loss
-        attacker.strength -= att_loss
-        attacker.supply = max(0.0, attacker.supply - attacker.stats.combat_cost)
-        attacker.moves_left = 0.0
-        attacker.entrench = 0
-
-        destroyed = defender.strength <= 0.0
-        if destroyed:
-            free_hex = defender.coord
-            self._kill(defender)
-            # Take the ground -- otherwise breakthroughs never happen. Only
-            # if this attacker's domain can actually occupy the hex.
-            if attacker.alive and self._can_occupy(attacker, free_hex):
-                self._set_pos(attacker, free_hex)
-        if attacker.strength <= 0.0:
-            self._kill(attacker)
-
-        result = CombatResult(
-            attacker.uid, defender.uid, odds, att_loss, def_loss, destroyed
-        )
-        self.combat_log.append(result)
-        return result
-
-    def _can_occupy(self, unit: Unit, coord: Coord) -> bool:
-        domain = unit.domain
-        if not self.map.passable(coord, domain):
-            return False
-        stack = self._by_coord.get(coord)
-        return not (stack and domain in stack)
-
-    def _bombard(self, unit: Unit, dest: Coord) -> None:
-        st = unit.stats
-        if not st.indirect or distance(unit.coord, dest) > st.reach:
-            return
-        target = None
-        for u in self._by_coord.get(dest, {}).values():
-            if u.side != unit.side and unit.can_engage(u):
-                target = u
-                break
-        if target is None:
-            return
-        ap = (unit.strength / 100.0) * st.attack * st.fire_coef
-        dp = self._defense_power(target)
-        odds = ap / dp
-        jitter = 0.80 + 0.40 * self.rng.random()
-        loss = _clamp(BASE_LOSS * (odds ** 0.70) * jitter)
-        target.strength -= loss
-        unit.supply = max(0.0, unit.supply - st.combat_cost)
-        unit.moves_left = 0.0
-        destroyed = target.strength <= 0.0
-        if destroyed:
-            self._kill(target)
-        self.combat_log.append(
-            CombatResult(unit.uid, target.uid, odds, 0.0, loss, destroyed)
-        )
-
-    # -- scoring ----------------------------------------------------------
-
-    def _score_objectives(self, side: Side) -> None:
-        for coord, value in self.objectives.items():
-            holder = self.objective_holder(coord)
-            if holder == side:
-                self.vp[side] += value
-
-    def objective_holder(self, coord: Coord) -> Optional[Side]:
-        """Only units that can capture hold ground. A jet overhead does not
-        take a town."""
-        for u in self._by_coord.get(coord, {}).values():
-            if u.stats.can_capture:
-                return u.side
-        return None
-
-    # -- observation ------------------------------------------------------
-
-    def observation(self, side: Side) -> dict:
-        """Full observability for now. Fog of war goes here later -- filter
-        by the union of friendly `spot` radii and it just works."""
-        return {
-            "turn": self.turn,
-            "side": int(side),
-            "vp": dict(self.vp),
-            "friendly": [_unit_dict(u) for u in self.units_of(side)],
-            "enemy": [_unit_dict(u) for u in self.units_of(side.other)],
-            "objectives": [
-                {"coord": c, "value": v, "holder": self.objective_holder(c)}
-                for c, v in self.objectives.items()
-            ],
-        }
-
-
-def _clamp(x: float) -> float:
-    return max(MIN_LOSS, min(MAX_LOSS, x))
-
-
-def _unit_dict(u: Unit) -> dict:
-    return {
-        "uid": u.uid,
-        "type": int(u.utype),
-        "domain": int(u.domain),
-        "coord": u.coord,
-        "strength": u.strength,
-        "entrench": u.entrench,
-        "supply": u.supply,
-        "in_supply": u.in_supply,
-        "sidc": u.sidc(),
-    }
+        self.standing.pop(unit.uid, None)
+        self._emit(E.UNIT_DESTROYED, unit.side, uid=unit.uid, utype=unit.utype.name, cause=cause)

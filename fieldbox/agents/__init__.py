@@ -8,17 +8,23 @@ from __future__ import annotations
 
 from typing import Dict, Type
 
-from ..sim.engine import Game, Order
+from typing import List
+
+from ..sim.orders import Order
 from ..sim.units import Side
 
 
 class Agent:
     name: str = "agent"
 
-    def reset(self, game: Game, side: Side) -> None:
-        """Called once at match start."""
+    def reset(self, side: Side, world) -> None:
+        """Called once at match start with the agent's side and the static
+        world (map, provinces). Never the Game."""
+        self.side = side
 
-    def act(self, game: Game, side: Side) -> Dict[int, Order]:
+    def act(self, obs) -> List[Order]:
+        """Orders for this turn, most important first. Only `obs` (an
+        Observation) may be read."""
         raise NotImplementedError
 
 

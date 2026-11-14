@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..agents import Agent
 from ..sim.engine import Game
-from ..sim.scenario import Scenario
+from ..world import WorldMap, generate_world
 from ..sim.units import Side
 
 
@@ -30,22 +30,12 @@ class MatchResult:
 def play_match(
     blue: Agent,
     red: Agent,
-    scenario: Scenario,
+    world: WorldMap,
     seed: int = 0,
-    max_steps: int = 10_000,
+    max_turns: Optional[int] = None,
 ) -> MatchResult:
-    game = Game(scenario, seed=seed)
-    blue.reset(game, Side.BLUE)
-    red.reset(game, Side.RED)
-    agents = {Side.BLUE: blue, Side.RED: red}
-
-    steps = 0
-    while not game.is_over and steps < max_steps:
-        side = game.current_side
-        orders = agents[side].act(game, side)
-        game.step(orders)
-        steps += 1
-
+    """One WEGO match. Agents see only their Observation."""
+    game = run_game(blue, red, world, seed, max_turns)
     return MatchResult(
         winner=game.winner(),
         vp=dict(game.vp),
@@ -53,6 +43,21 @@ def play_match(
         survivors={s: len(game.units_of(s)) for s in (Side.BLUE, Side.RED)},
         seed=seed,
     )
+
+
+def run_game(blue: Agent, red: Agent, world: WorldMap, seed: int = 0,
+             max_turns: Optional[int] = None, on_turn=None) -> Game:
+    """Play a match to the end and return the finished Game. `on_turn(game)`
+    is called after every turn (the recorder uses it)."""
+    game = Game(world, seed=seed, max_turns=max_turns)
+    agents = {Side.BLUE: blue, Side.RED: red}
+    for side, agent in agents.items():
+        agent.reset(side, world)
+    while not game.is_over:
+        game.step_turn({s: agents[s].act(game.observe(s)) for s in (Side.BLUE, Side.RED)})
+        if on_turn is not None:
+            on_turn(game)
+    return game
 
 
 @dataclass
@@ -82,9 +87,9 @@ def _update_elo(a: Record, b: Record, score_a: float, k: float = 24.0) -> None:
 def tournament(
     agent_factories: Dict[str, callable],
     games_per_pair: int = 20,
-    scenario_seeds: Tuple[int, ...] = (1, 2, 3, 4),
+    map_seeds: Tuple[int, ...] = (1, 2, 3, 4),
     verbose: bool = True,
-    preset: str = "combined_arms",
+    preset: str = "tiny",
 ) -> Dict[str, Record]:
     """Round robin, both colours, across several maps.
 
@@ -92,7 +97,7 @@ def tournament(
     and rotating map seeds stops agents from being tuned to one layout.
     """
     records: Dict[str, Record] = {n: Record() for n in agent_factories}
-    scenarios = [Scenario.preset(preset, map_seed=s) for s in scenario_seeds]
+    worlds = [generate_world(s, preset) for s in map_seeds]
 
     start = time.perf_counter()
     total_turns = 0
@@ -100,7 +105,7 @@ def tournament(
 
     for name_a, name_b in itertools.combinations(agent_factories, 2):
         for i in range(games_per_pair):
-            scenario = scenarios[i % len(scenarios)]
+            world = worlds[i % len(worlds)]
             # Alternate colours between repetitions.
             if i % 2 == 0:
                 blue_name, red_name = name_a, name_b
@@ -108,7 +113,7 @@ def tournament(
                 blue_name, red_name = name_b, name_a
             blue = agent_factories[blue_name]()
             red = agent_factories[red_name]()
-            result = play_match(blue, red, scenario, seed=i)
+            result = play_match(blue, red, world, seed=i)
             total_turns += result.turns
             matches += 1
 
@@ -154,21 +159,22 @@ def format_table(records: Dict[str, Record]) -> str:
     return "\n".join(lines)
 
 
-def benchmark(steps: int = 2000, preset: str = "combined_arms") -> float:
-    """Raw environment throughput -- the number that decides whether RL is
+def benchmark(steps: int = 2000, preset: str = "tiny") -> float:
+    """Raw environment throughput in side-turns per second (two per WEGO
+    turn), random vs random -- the number that decides whether RL is
     feasible at all."""
     from ..agents import RandomAgent
-
-    scenario = Scenario.preset(preset, map_seed=1)
+    world = generate_world(1, preset)
     a, b = RandomAgent(seed=1), RandomAgent(seed=2)
     done = 0
     start = time.perf_counter()
     while done < steps:
-        game = Game(scenario, seed=done)
-        agents = {Side.BLUE: a, Side.RED: b}
+        game = Game(world, seed=done)
+        a.reset(Side.BLUE, world)
+        b.reset(Side.RED, world)
         while not game.is_over and done < steps:
-            side = game.current_side
-            game.step(agents[side].act(game, side))
-            done += 1
+            game.step_turn({Side.BLUE: a.act(game.observe(Side.BLUE)),
+                            Side.RED: b.act(game.observe(Side.RED))})
+            done += 2
     elapsed = time.perf_counter() - start
     return done / elapsed

@@ -90,8 +90,8 @@ class Recorder:
     _combat_seen: int = 0
     _types: Dict[int, tuple] = field(default_factory=dict)
 
-    def capture(self, game, acting_side: Side) -> None:
-        """Snapshot after `acting_side` has completed its turn."""
+    def capture(self, game, acting_side: str = "BOTH") -> None:
+        """Snapshot after a (simultaneous) turn. Phase 0 is the deployment."""
         phase = self._phase
         self._phase += 1
 
@@ -102,7 +102,7 @@ class Recorder:
             if not u.alive:
                 continue
             self.units.append(UnitRow(
-                turn=game.turn, phase=phase, acting_side=acting_side.name,
+                turn=game.turn, phase=phase, acting_side=acting_side,
                 uid=u.uid, side=u.side.name, utype=u.stats.label,
                 domain=u.domain.name, q=u.q, r=u.r, col=u.q + u.r // 2,
                 strength=round(u.strength, 2), supply=round(u.supply, 2),
@@ -116,7 +116,7 @@ class Recorder:
         red = game.units_of(Side.RED)
         nets = game.supply_net
         self.turns.append(TurnRow(
-            turn=game.turn, phase=phase, acting_side=acting_side.name,
+            turn=game.turn, phase=phase, acting_side=acting_side,
             vp_blue=game.vp[Side.BLUE], vp_red=game.vp[Side.RED],
             units_blue=len(blue), units_red=len(red),
             strength_blue=round(sum(u.strength for u in blue), 1),
@@ -173,38 +173,27 @@ def _mean(values) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
-def play_recorded(blue, red, scenario, seed: int = 0, max_steps: int = 10_000):
+def play_recorded(blue, red, world, seed: int = 0, max_turns=None):
     """Run a match and return (game, recorder).
 
     Recording is pure observation, so this produces exactly the same game as
     `arena.play_match` with the same seed.
     """
-    from ..sim.engine import Game
-
-    game = Game(scenario, seed=seed)
-    blue.reset(game, Side.BLUE)
-    red.reset(game, Side.RED)
-    agents = {Side.BLUE: blue, Side.RED: red}
+    from ..league.arena import run_game
     rec = Recorder()
     rec.meta = {
         "seed": str(seed),
-        "map_seed": str(getattr(scenario, "map_seed", "")),
-        "template": str(getattr(scenario, "template", "")),
-        "max_turns": str(scenario.max_turns),
+        "map_seed": str(world.seed),
+        "preset": world.preset,
+        "max_turns": str(max_turns or world.params.match.max_turns),
     }
+    def on_turn(game):
+        rec.capture(game)
 
-    # Phase 0 is the deployment, captured before anyone moves. Without it
-    # "start hex" meant "position after the first turn", which reported a
-    # unit that advanced immediately as having never left its start.
-    rec.capture(game, Side.BLUE)
-
-    steps = 0
-    while not game.is_over and steps < max_steps:
-        side = game.current_side
-        game.step(agents[side].act(game, side))
-        rec.capture(game, side)
-        steps += 1
-
+    # Phase 0 is the deployment, captured before anyone moves.
+    from ..sim.engine import Game
+    rec.capture(Game(world, seed=seed, max_turns=max_turns), "DEPLOY")
+    game = run_game(blue, red, world, seed, max_turns, on_turn=on_turn)
     winner = game.winner()
     rec.meta["winner"] = winner.name if winner is not None else "DRAW"
     rec.meta["turns"] = str(game.turn)

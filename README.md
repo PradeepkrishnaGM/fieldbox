@@ -11,11 +11,10 @@ traits (aggression, force mix, what to protect, what to target). A population
 of doctrines evolves through league play, and commanders counter-build
 against what they observe within a match.
 
-**Status: M2** — deterministic headless engine (nine unit types,
-logistics, scripted and doctrinal agents, Elo arena, CSV telemetry), plus a
-seeded, point-symmetric world generator (terrain, central sea, rivers,
-cities, roads, provinces, regions, starting positions) and a desktop
-viewer to browse the maps. Maps are not connected to the game engine yet.
+**Status: M3** — simultaneous-turn (WEGO) engine on generated, point-symmetric
+worlds: both commanders write orders from a snapshot `Observation`, movement
+and combat resolve together, and events are hashed for determinism. Scripted
+and doctrinal agents, Elo arena, CSV telemetry and the map viewer are in.
 Economy, fog of war and evolution are next.
 
 ## Quick start
@@ -25,7 +24,7 @@ The engine needs only Python 3.10+ and the standard library.
 ```bash
 python -m fieldbox play --watch             # one match, ASCII map, animated
 python -m fieldbox play --blue doctrine --red rush --seed 3
-python -m fieldbox tournament --games 10    # round robin with Elo
+python -m fieldbox tournament --games 10 --preset tiny   # round robin with Elo (tiny|standard|large)
 python -m fieldbox bench                    # engine throughput
 python -m fieldbox report --games 20        # batch diagnostics and anomalies
 ```

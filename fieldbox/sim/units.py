@@ -54,6 +54,7 @@ class UnitType(IntEnum):
     HELICOPTER = 6
     JET = 7
     SHIP = 8
+    ENGINEER = 9          # added in M3; existing values unchanged
 
 
 INDIRECT_COEF = P.COMBAT.indirect_coef     # area fire: attrition, not decision
@@ -84,6 +85,8 @@ class UnitStats:
     # forces the sortie cycle rather than letting them loiter forever.
     upkeep: float = P.UNIT_DEFAULT_UPKEEP
     combat_cost: float = P.UNIT_DEFAULT_COMBAT_COST
+    cost: int = 0             # production points to build (M4)
+    build_turns: int = 0      # turns in a production queue (M4)
 
     @property
     def indirect(self) -> bool:
@@ -121,18 +124,10 @@ def can_engage(attacker_type: UnitType, defender_domain: Domain) -> bool:
     return defender_domain in STATS[attacker_type].targets
 
 
-@dataclass
-class Unit:
-    uid: int
-    side: Side
-    utype: UnitType
-    q: int
-    r: int
-    strength: float = 100.0
-    moves_left: float = 0.0
-    entrench: int = 0
-    supply: float = 100.0
-    in_supply: bool = True
+class UnitLike:
+    """Read-only behaviour shared by live units and observation views.
+    Subclasses provide uid, side, utype, q, r, strength, entrench, supply,
+    in_supply."""
 
     @property
     def coord(self):
@@ -150,8 +145,22 @@ class Unit:
     def alive(self) -> bool:
         return self.strength > 0.0
 
-    def can_engage(self, other: "Unit") -> bool:
+    def can_engage(self, other: "UnitLike") -> bool:
         return other.domain in self.stats.targets
+
+
+@dataclass
+class Unit(UnitLike):
+    uid: int
+    side: Side
+    utype: UnitType
+    q: int
+    r: int
+    strength: float = 100.0
+    moves_left: float = 0.0
+    entrench: int = 0
+    supply: float = 100.0
+    in_supply: bool = True
 
     def clone(self) -> "Unit":
         return Unit(
