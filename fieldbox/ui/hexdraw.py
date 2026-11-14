@@ -50,12 +50,17 @@ class MapRenderer:
         self.bbox = (min(xs) - s * SQ3 / 2, -s, max(xs) + s * SQ3 / 2, s * 1.5 * (h - 1) + s)
         self._cache: "OrderedDict[tuple, pygame.Surface]" = OrderedDict()
 
-    def layer(self, zoom: float, tint: bool, grid: bool) -> Tuple[pygame.Surface, float, float]:
-        """(surface, world_x0, world_y0): blit at world0 * zoom + camera offset."""
-        key = (round(zoom, 4), tint, grid)
+    def layer(self, zoom: float, tint: bool, grid: bool,
+              owner=None) -> Tuple[pygame.Surface, float, float]:
+        """(surface, world_x0, world_y0): blit at world0 * zoom + camera offset.
+        `owner` (province id -> Side or None) overrides the world's starting
+        owners, so the match screen can show provinces changing hands."""
+        key = (round(zoom, 4), tint, grid,
+               None if owner is None else tuple(sorted((k, -1 if v is None else int(v))
+                                                       for k, v in owner.items())))
         surf = self._cache.get(key)
         if surf is None:
-            surf = self._build(zoom, tint, grid)
+            surf = self._build(zoom, tint, grid, owner)
             self._cache[key] = surf
             while len(self._cache) > CACHE_SIZE:
                 self._cache.popitem(last=False)
@@ -65,8 +70,9 @@ class MapRenderer:
 
     # -- drawing ----------------------------------------------------------
 
-    def _build(self, z: float, tint: bool, grid: bool) -> pygame.Surface:
+    def _build(self, z: float, tint: bool, grid: bool, owner=None) -> pygame.Surface:
         w, s = self.world, self.s
+        owner = w.owner if owner is None else owner
         t = w.hexmap.terrain
         minx, miny, maxx, maxy = self.bbox
         surf = pygame.Surface((math.ceil((maxx - minx) * z) + 2, math.ceil((maxy - miny) * z) + 2))
@@ -86,7 +92,7 @@ class MapRenderer:
             else:
                 col = theme.TERRAIN[k.name]
                 if tint:
-                    side = w.owner.get(w.province_of.get(c, -1))
+                    side = owner.get(w.province_of.get(c, -1))
                     if side is not None:
                         col = theme.mix(col, theme.SIDE_FILL[side], theme.TINT)
             pts = hex_corners(x, y, sz + 0.5)
@@ -97,7 +103,7 @@ class MapRenderer:
             if sz >= DECOR_MIN_PX:
                 self._decorate(surf, k, x, y, sz, col)
 
-        self._borders(surf, pos, sz, tint, z)
+        self._borders(surf, pos, sz, tint, z, owner)
         width = max(2, round(3 * z))
         for path in w.river_paths:
             self._polyline(surf, theme.RIVER, [pos(c) for c in path], width)
@@ -133,7 +139,7 @@ class MapRenderer:
                 for dy in (-.2, .2):
                     pygame.draw.rect(surf, dark, pygame.Rect(x + dx * sz - b / 2, y + dy * sz - b / 2, b, b))
 
-    def _borders(self, surf, pos, sz: float, tint: bool, z: float) -> None:
+    def _borders(self, surf, pos, sz: float, tint: bool, z: float, owners) -> None:
         w = self.world
         thin = max(1, round(z * 1.2))
         thick = max(2, round(3 * z))
@@ -152,7 +158,7 @@ class MapRenderer:
                 pygame.draw.line(surf, theme.BORDER, a, b, thin)
                 if not tint:
                     continue
-                o1, o2 = w.owner.get(p), w.owner.get(q)
+                o1, o2 = owners.get(p), owners.get(q)
                 if o1 == o2:
                     continue
                 for owner, (hx, hy) in ((o1, (cx, cy)), (o2, (nx, ny))):

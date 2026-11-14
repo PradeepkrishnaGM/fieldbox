@@ -648,19 +648,23 @@ class Game:
                 total += rg.bonus
         return total
 
+    def income(self, side: Side) -> float:
+        """PP this side would earn now (PLAN.md §3.6), with the current power factor."""
+        pf = self.power[side]
+        hq = sum(st.strength for st in self.structures_of(side, ST.HQ)) / 100.0
+        inc = ECO.hq_income * min(1.0, hq)
+        inc += sum(ECO.industry_income * st.strength / 100.0 * pf
+                   for st in self.structures_of(side, ST.INDUSTRY))
+        inc += sum(p.value for p in self.world.provinces if self.owner.get(p.id) is side)
+        return inc + self._region_bonus(side)
+
     def _phase_economy(self) -> None:
         for side in Side:
             old = self.power[side]
             pf = self.power[side] = self._power_factor(side)
             if pf < 1.0 and (pf < old or old >= 1.0):
                 self._emit(E.POWER_LOW, side, factor=round(pf, 4))
-            hq = sum(st.strength for st in self.structures_of(side, ST.HQ)) / 100.0
-            income = ECO.hq_income * min(1.0, hq)
-            income += sum(ECO.industry_income * st.strength / 100.0 * pf
-                          for st in self.structures_of(side, ST.INDUSTRY))
-            income += sum(p.value for p in self.world.provinces if self.owner.get(p.id) is side)
-            income += self._region_bonus(side)
-            self.pp[side] += income
+            self.pp[side] += self.income(side)
         # Production: the head of each queue advances; finished units spawn
         # on the nearest free hex (contention is settled by a seeded shuffle).
         order = sorted(self.queues)

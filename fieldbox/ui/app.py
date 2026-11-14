@@ -72,17 +72,20 @@ class App:
         pygame.quit()
 
 
-def make_screen(name: str, app: App, seed: int = 1, preset: str = "standard") -> Screen:
+def make_screen(name: str, app: App, seed: int = 1, preset: str = "standard", **opts) -> Screen:
     if name == "mapview":
         from .screens.mapview import MapViewScreen
         return MapViewScreen(app, seed=seed, preset=preset)
     if name == "symbols":
         from .screens.symbols_sheet import SymbolsScreen
         return SymbolsScreen(app)
+    if name == "match":
+        from .screens.match import MatchScreen
+        return MatchScreen.create(app, seed=seed, preset=preset, **opts)
     raise ValueError(f"unknown screen '{name}'")
 
 
-def run_gui(name: str, seed: int = 1, preset: str = "standard") -> None:
+def run_gui(name: str, seed: int = 1, preset: str = "standard", **opts) -> None:
     app = App()
-    app.push(make_screen(name, app, seed, preset))
+    app.push(make_screen(name, app, seed, preset, **opts))
     app.run()

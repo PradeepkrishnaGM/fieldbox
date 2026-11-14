@@ -33,15 +33,16 @@ def _world(args):
 
 
 def cmd_play(args) -> None:
+    from .record.replay import LiveMatch
     world = _world(args)
-
-    def show(game):
+    match = LiveMatch(_make(args.blue), _make(args.red), world, seed=args.seed,
+                      max_turns=args.turns, blue_name=args.blue, red_name=args.red)
+    while not match.done:
+        match.step()
         if args.watch:
-            print("\033[2J\033[H" + render(game))
+            print("\033[2J\033[H" + render(match.game))
             time.sleep(args.delay)
-
-    game = run_game(_make(args.blue), _make(args.red), world, seed=args.seed,
-                    max_turns=args.turns, on_turn=show)
+    game = match.game
     if not args.watch:
         print(render(game))
     winner = game.winner()
@@ -50,6 +51,8 @@ def cmd_play(args) -> None:
           f"(BLUE {game.vp[Side.BLUE]:.0f} - {game.vp[Side.RED]:.0f} RED VP, {game.turn} turns)")
     print(f"Survivors: BLUE {len(game.units_of(Side.BLUE))}, "
           f"RED {len(game.units_of(Side.RED))}   Engagements: {len(game.combat_log)}")
+    if args.save:
+        print(f"replay written to {match.replay.save(args.save)}")
 
 
 def cmd_tournament(args) -> None:
@@ -96,7 +99,8 @@ def cmd_worldgen(args) -> None:
 
 def cmd_gui(args) -> None:
     from .ui.app import run_gui
-    run_gui(args.screen, seed=args.seed, preset=args.preset)
+    run_gui(args.screen, seed=args.seed, preset=args.preset, blue=args.blue, red=args.red,
+            game_seed=args.game_seed, turns=args.turns, replay=args.replay)
 
 
 def main(argv=None) -> None:
@@ -113,6 +117,8 @@ def main(argv=None) -> None:
     pl.add_argument("--turns", type=int, default=None, help="override the preset's turn limit")
     pl.add_argument("--watch", action="store_true", help="animate turn by turn")
     pl.add_argument("--delay", type=float, default=0.25)
+    pl.add_argument("--save", default=None, metavar="FILE.fbr",
+                    help="write a replay (gzip JSON) to open with `gui --screen match --replay`")
     pl.set_defaults(func=cmd_play)
 
     tn = sub.add_parser("tournament", help="round robin over all agents")
@@ -151,9 +157,14 @@ def main(argv=None) -> None:
     wg.set_defaults(func=cmd_worldgen)
 
     gu = sub.add_parser("gui", help="open a desktop window (needs pygame-ce)")
-    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols"])
-    gu.add_argument("--seed", type=int, default=1)
+    gu.add_argument("--screen", default="mapview", choices=["mapview", "symbols", "match"])
+    gu.add_argument("--seed", type=int, default=1, help="map seed")
     gu.add_argument("--preset", default="standard", choices=sorted(WORLD_PRESETS))
+    gu.add_argument("--blue", default="doctrine", help="match: BLUE agent")
+    gu.add_argument("--red", default="rush", help="match: RED agent")
+    gu.add_argument("--game-seed", type=int, default=0, help="match: game seed")
+    gu.add_argument("--turns", type=int, default=None, help="match: turn limit override")
+    gu.add_argument("--replay", default=None, metavar="FILE.fbr", help="match: open a saved replay")
     gu.set_defaults(func=cmd_gui)
 
     args = p.parse_args(argv)
