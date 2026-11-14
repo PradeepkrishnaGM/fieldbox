@@ -1,4 +1,4 @@
-"""Procedural unit counters and structure icons (PLAN.md §5.5). No assets."""
+"""Procedural unit counters and structure icons. No assets."""
 
 from __future__ import annotations
 

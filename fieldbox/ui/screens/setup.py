@@ -1,4 +1,4 @@
-"""Match setup (PLAN.md 5.8): map, seeds, turn limit and both doctrines, with a map preview."""
+"""Match setup: map, seeds, turn limit and both doctrines, with a map preview."""
 
 from __future__ import annotations
 

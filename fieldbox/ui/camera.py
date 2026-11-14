@@ -1,4 +1,4 @@
-"""Pan/zoom camera and hex <-> pixel maths (PLAN.md §5.3). Pointy-top hexes."""
+"""Pan/zoom camera and hex <-> pixel maths. Pointy-top hexes."""
 
 from __future__ import annotations
 

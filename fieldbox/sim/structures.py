@@ -1,4 +1,4 @@
-"""Structures (PLAN.md §3.3): fixed installations that produce, supply and score.
+"""Structures: fixed installations that produce, supply and score.
 
 A structure sits on one hex, belongs to a side, has strength 0-100 and never
 attacks. It does not use a stacking slot. Stats live in `params.STRUCTURE_STATS`.

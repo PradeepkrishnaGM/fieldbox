@@ -1,8 +1,8 @@
-"""Observation: the only thing agents may read (PLAN.md §4.1).
+"""Observation: the only thing agents may read.
 
 A fresh snapshot per side per turn. It holds frozen unit views, never live
 `Unit` objects and never the `Game`. Enemy information is filtered by fog of
-war (PLAN.md §3.8): `enemy_units` holds only units inside the side's
+war: `enemy_units` holds only units inside the side's
 visibility, `ghosts` the recently lost contacts, and `enemy_structures` the
 structures seen so far (`age` 0 = visible now, larger = last seen that many
 turns ago). The static world (map, provinces) is shared read-only.

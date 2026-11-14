@@ -1,4 +1,4 @@
-"""Headless screenshots (PLAN.md §5.9).
+"""Headless screenshots.
 
     python -m fieldbox.ui.shot --screen mapview --seed 1 --preset standard \
         --out shots/mapview_s1.png

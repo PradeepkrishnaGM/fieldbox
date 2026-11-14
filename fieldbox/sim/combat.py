@@ -1,4 +1,4 @@
-"""Combat maths (PLAN.md §3.9): pure functions, milsim's numbers unchanged.
+"""Combat maths: pure functions, milsim's numbers unchanged.
 
 Shared by the engine (to resolve fights) and the Observation (so agents can
 estimate odds with exactly the same formula).
@@ -70,6 +70,6 @@ def fire_loss(odds: float, jitter: float) -> float:
 
 def structure_defense(structure, hexmap: HexMap) -> float:
     """A structure defends like a unit with no entrenchment and no supply
-    effects; its own strength scales it (PLAN.md §3.3)."""
+    effects; its own strength scales it."""
     terr = hexmap.def_mult(structure.coord, Domain.LAND)
     return max((structure.strength / 100.0) * structure.stats.defense * terr, 1e-6)

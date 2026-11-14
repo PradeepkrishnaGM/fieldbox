@@ -1,4 +1,4 @@
-"""Home provinces, HQs, starting structures and forces (PLAN.md §3.1).
+"""Home provinces, HQs, starting structures and forces.
 
 Everything is chosen for BLUE inside BLUE's half, then mirrored for RED, so
 the start is fair by construction.

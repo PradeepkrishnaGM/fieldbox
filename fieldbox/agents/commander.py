@@ -1,9 +1,9 @@
-"""Commander: the strategic layer (PLAN.md 4.2).
+"""Commander: the strategic layer.
 
 Each turn it scores objectives with the genome's weights, picks a main (and
 possibly a secondary) effort, reserves garrisons and a reserve, assigns every
 unit a task, and plans builds. The per-unit handlers live in tactical.py and
-carry the task out. In-match adaptation (PLAN.md 4.4) nudges build and
+carry the task out. In-match adaptation nudges build and
 garrison weights toward counters to what the enemy is seen fielding.
 
 Agents expose two optional hooks used by the match runner: `tasks()` (uid ->

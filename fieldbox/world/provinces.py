@@ -1,4 +1,4 @@
-"""Provinces and regions: the RISK layer (PLAN.md §3.1)."""
+"""Provinces and regions: the RISK layer."""
 
 from __future__ import annotations
 

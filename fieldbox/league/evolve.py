@@ -1,4 +1,4 @@
-"""Competitive co-evolution of doctrine genomes (PLAN.md 4.5, DECISIONS.md "M8 design").
+"""Competitive co-evolution of doctrine genomes.
 
 Every game is a pure function of (blue spec, red spec, world preset, map seed,
 game seed), so a run is reproducible whatever the worker count. All

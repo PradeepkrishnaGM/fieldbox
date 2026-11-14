@@ -240,7 +240,7 @@ class TestCaptures(unittest.TestCase):
 class TestLogistics(unittest.TestCase):
     def test_start_supply_is_symmetric(self):
         # Some air/engineer units start beyond the HQ supply range until M4
-        # adds depots (DECISIONS.md); what matters is that it is fair.
+        # adds depots; what matters is that it is fair.
         for s in range(1, 5):
             g = Game(generate_world(s, "tiny"))
             cut = {side: sum(not u.in_supply for u in g.units_of(side)) for side in Side}
@@ -301,7 +301,7 @@ class TestDiagnosticReport(unittest.TestCase):
 
 
 class TestAgentStrength(unittest.TestCase):
-    """The doctrine agent is the tactical baseline (DECISIONS.md, M3)."""
+    """The doctrine agent is the tactical baseline."""
 
     def _score(self, a, b, n, preset="tiny"):
         pts = 0.0
@@ -340,7 +340,7 @@ class TestFairness(unittest.TestCase):
 
 class TestGolden(unittest.TestCase):
     """Pinned event-stream hashes: any change to engine or doctrine behaviour
-    must be deliberate and re-pinned with a reason in DECISIONS.md."""
+    must be deliberate and re-pinned with a stated reason."""
 
     GOLDEN = [
         '67737f1310c10610d1d3b598ba66e07cd3c87666ea6c15c9c88cd6864442351f',

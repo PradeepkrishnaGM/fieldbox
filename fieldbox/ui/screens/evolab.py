@@ -1,4 +1,4 @@
-"""Evolution Lab (PLAN.md 5.7): start, watch and inspect evolution runs.
+"""Evolution Lab: start, watch and inspect evolution runs.
 
 The screen never imports the league code that runs games. A run is a
 `python -m fieldbox evolve ...` subprocess; this screen polls its files

@@ -1,4 +1,4 @@
-"""Small chart drawing helpers for the Evolution Lab (PLAN.md 5.7). Pure pygame, no data logic.
+"""Small chart drawing helpers for the Evolution Lab. Pure pygame, no data logic.
 
 Every function draws a titled panel into `rect` and returns the inner plot
 rect, so a screen can hit-test clicks against it (`index_at`).

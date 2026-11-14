@@ -1,4 +1,4 @@
-"""Window, screen stack and main loop (PLAN.md §5.1)."""
+"""Window, screen stack and main loop."""
 
 from __future__ import annotations
 

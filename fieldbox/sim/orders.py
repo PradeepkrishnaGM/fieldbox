@@ -1,4 +1,4 @@
-"""Orders (PLAN.md §3.4): Hold, MoveTo, Attack, Bombard, Strike, Build,
+"""Orders: Hold, MoveTo, Attack, Bombard, Strike, Build,
 Construct, Repair.
 
 Orders are persistent: a unit keeps its last order until it completes, it

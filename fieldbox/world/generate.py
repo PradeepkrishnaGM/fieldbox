@@ -1,4 +1,4 @@
-"""World generation (PLAN.md §3.1): noise, terrain, rivers, cities, roads.
+"""World generation: noise, terrain, rivers, cities, roads.
 
 Every map is exactly point-symmetric (180-degree rotation), so both sides
 get the same ground. The recipe: build the BLUE half's features, then mirror.
@@ -103,7 +103,7 @@ def make_terrain(seed: int, wp: P.WorldParams):
         elev[c] -= wp.edge_falloff * (abs(c[1] - mid) / mid) ** 2
 
     # 1b. Central sea basin: an east-west ellipse at the map centre, so a sea
-    # that is its own mirror image always exists for the ports (DECISIONS.md).
+    # that is its own mirror image always exists for the ports.
     xy = {c: _xy(c) for c in coords}
     cx = sum(p[0] for p in xy.values()) / len(xy)
     cy = sum(p[1] for p in xy.values()) / len(xy)

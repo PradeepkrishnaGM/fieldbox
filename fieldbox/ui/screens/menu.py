@@ -1,4 +1,4 @@
-"""Main menu (PLAN.md 5.8) and the replay picker."""
+"""Main menu and the replay picker."""
 
 from __future__ import annotations
 

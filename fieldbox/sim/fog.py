@@ -1,4 +1,4 @@
-"""Fog of war (PLAN.md §3.8): what each side can see, and what it remembers.
+"""Fog of war: what each side can see, and what it remembers.
 
 Visibility is per domain, because radar sees air and sea units further than
 land units: `Visibility.land` is where land units (and structures) can be

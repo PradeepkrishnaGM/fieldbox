@@ -1,4 +1,4 @@
-"""Events: the engine's record of what happened (PLAN.md §3.5).
+"""Events: the engine's record of what happened.
 
 Every phase appends events. They drive the replay, the viewer's animation and
 the determinism checks: equal seeds and agents must give an identical event

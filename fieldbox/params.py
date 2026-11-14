@@ -1,8 +1,8 @@
 """Every tunable number in Fieldbox lives here.
 
-Rules (PLAN.md §0.4):
+Rules:
 - each default has a comment;
-- defaults listed in PLAN.md are not changed without the user's approval;
+- documented defaults are changed only deliberately;
 - this module imports nothing from the engine. Tables are keyed by enum
   *names* (``"LAND"``, ``"PLAIN"``, ``"TANK"``) and each engine module
   converts them to its own enums. That keeps the import graph acyclic.
@@ -46,7 +46,7 @@ COMBAT = CombatParams()
 @dataclass(frozen=True)
 class SupplyParams:
     supply_max: float = 100.0           # full stock
-    # Supply sources (PLAN.md §3.10). Land supply is traced from the HQ and
+    # Supply sources. Land supply is traced from the HQ and
     # from FOBs with a movement-point budget each; roads stretch it. Sea
     # supply is traced over water from each own port. Aircraft rearm within a
     # hex radius of an own airfield or FOB (a radius, not a trace).
@@ -238,7 +238,7 @@ REPORT_CUTOFF_HEAVY = 0.50     # fraction of unit-turns spent out of supply
 REPORT_COLOUR_SWING = 0.50     # win-rate gap between playing BLUE and RED
 
 # ---------------------------------------------------------------------------
-# World generation, start positions, match length (PLAN.md §3.1, §6.1)
+# World generation, start positions, match length
 # ---------------------------------------------------------------------------
 
 
@@ -321,7 +321,7 @@ class FogParams:
 
 FOG = FogParams()
 
-# Structure table (PLAN.md §3.3): defence, capturable, power demand, what it
+# Structure table: defence, capturable, power demand, what it
 # builds. `produces` is the domain of units it can build, or None.
 STRUCTURE_STATS: Dict[str, dict] = {
     "HQ": dict(defense=2.0, capturable=False, power_demand=0, produces="LAND", label="HQ"),

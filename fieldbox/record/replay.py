@@ -1,4 +1,4 @@
-"""Replays (PLAN.md M5): a snapshot per turn plus the turn's events.
+"""Replays: a snapshot per turn plus the turn's events.
 
 A replay holds no engine state, only plain data, so the viewer can scrub
 through it without running anything. The static map is not stored: the world

@@ -1,4 +1,4 @@
-"""Terrain rendering (PLAN.md §5.4): one cached surface per zoom value.
+"""Terrain rendering: one cached surface per zoom value.
 
 The whole map (terrain, rivers, roads, province borders, ownership tint) is
 drawn once per (zoom, tint, grid) and blitted; only icons and highlights are

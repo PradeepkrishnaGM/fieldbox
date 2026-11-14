@@ -1,4 +1,4 @@
-"""Colours, fonts and sizes (PLAN.md §5.2). The only place UI colours live."""
+"""Colours, fonts and sizes. The only place UI colours live."""
 
 from __future__ import annotations
 

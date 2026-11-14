@@ -1,4 +1,4 @@
-"""Match viewer (PLAN.md §5.6): watch a game live, or step through a replay.
+"""Match viewer: watch a game live, or step through a replay.
 
 The screen only ever reads a `Replay` (plain-data snapshots plus events). In
 live mode a `LiveMatch` appends a snapshot whenever the animation finishes, so

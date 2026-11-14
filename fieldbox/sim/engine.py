@@ -1,4 +1,4 @@
-"""Game state and simultaneous (WEGO) turn resolution (PLAN.md §3.5).
+"""Game state and simultaneous (WEGO) turn resolution.
 
 Design notes
 ------------
@@ -677,7 +677,7 @@ class Game:
         return total
 
     def income(self, side: Side) -> float:
-        """PP this side would earn now (PLAN.md §3.6), with the current power factor."""
+        """PP this side would earn now, with the current power factor."""
         pf = self.power[side]
         hq = sum(st.strength for st in self.structures_of(side, ST.HQ)) / 100.0
         inc = ECO.hq_income * min(1.0, hq)

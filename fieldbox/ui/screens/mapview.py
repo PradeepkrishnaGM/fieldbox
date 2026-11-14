@@ -1,4 +1,4 @@
-"""World generator viewer (PLAN.md M2): browse seeds, presets and overlays."""
+"""World generator viewer: browse seeds, presets and overlays."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""DoctrineGenome: the evolvable traits of a Commander (PLAN.md 4.3).
+"""DoctrineGenome: the evolvable traits of a Commander.
 
 Every trait is a float in [0, 1]. Decoders below turn them into engine
 quantities; ranges live in `params.GENOME`. Genomes are immutable values.
